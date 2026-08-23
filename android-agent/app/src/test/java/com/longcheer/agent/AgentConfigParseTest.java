@@ -9,6 +9,7 @@ import com.longcheer.agent.config.PollingConfig;
 import com.longcheer.agent.config.RuleActionConfig;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 import org.junit.Test;
 
@@ -20,7 +21,7 @@ import static org.junit.Assert.assertTrue;
 public class AgentConfigParseTest {
 
     @Test
-    public void parseFullConfig_allFieldsSet() {
+    public void parseFullConfig_allFieldsSet() throws JSONException {
         JSONObject json = new JSONObject()
                 .put("configVersion", 3)
                 .put("maxSlots", 3)
@@ -161,7 +162,7 @@ public class AgentConfigParseTest {
     }
 
     @Test
-    public void parseDefaults_usedForMissingFields() {
+    public void parseDefaults_usedForMissingFields() throws JSONException {
         AgentConfig config = AgentConfig.fromJson(new JSONObject());
         assertEquals(0, config.getConfigVersion());
         assertEquals(3, config.getMaxSlots());
