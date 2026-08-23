@@ -222,12 +222,12 @@ public class CommandDispatcherImpl implements CommandDispatcher {
             return;
         }
         int max = ((Number) maxRaw).intValue();
-        try {
-            connectionScheduler.setMaxSlots(max);
-            stateReporter.reportCommandAck(requestId, 0, null);
-        } catch (IllegalArgumentException e) {
-            stateReporter.reportCommandAck(requestId, 3003, e.getMessage());
+        if (max < 2 || max > 5) {
+            stateReporter.reportCommandAck(requestId, 3003, "maxSlots must be in [2,5]");
+            return;
         }
+        connectionScheduler.setMaxSlots(max);
+        stateReporter.reportCommandAck(requestId, 0, null);
     }
 
     private void handleSetPersistent(Map<String, Object> command, String requestId, String mac) {

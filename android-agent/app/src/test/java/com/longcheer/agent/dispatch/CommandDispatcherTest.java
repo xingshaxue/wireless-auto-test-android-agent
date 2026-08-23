@@ -22,6 +22,7 @@ import java.util.Map;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -163,7 +164,7 @@ public class CommandDispatcherTest {
 
         dispatcher.dispatch(cmd);
 
-        verify(stateReporter).reportCommandAck("req-7", 2002, any());
+        verify(stateReporter).reportCommandAck(eq("req-7"), eq(2002), any());
     }
 
     @Test

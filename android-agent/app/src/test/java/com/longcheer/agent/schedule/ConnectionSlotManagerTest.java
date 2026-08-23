@@ -82,12 +82,9 @@ public class ConnectionSlotManagerTest {
         assertNotNull(slot);
         assertFalse(slot.isFree());
 
-        // 等待超期后由泄漏检查释放。
-        try {
-            Thread.sleep(80);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        // 在单元测试环境中 SystemClock.elapsedRealtime() 返回 0，
+        // 因此手动将 acquireTime 设为过去的时间点以模拟超期。
+        slot.setAcquireTime(-100);
         leaky.releaseLeakedSlots();
         assertTrue(slot.isFree());
     }
