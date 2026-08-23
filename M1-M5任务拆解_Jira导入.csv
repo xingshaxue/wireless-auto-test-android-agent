@@ -1,0 +1,105 @@
+﻿Issue Type,Epic Name,Epic Link,Summary,Priority,Story Points,Labels,SDD Section,Description,Acceptance Criteria
+Epic,M1 骨架打通,,M1：前台 Service + TCP + 状态机 + Registry + 单设备直连,High,,milestone,,目标：以槽位数=1 的退化形态跑通 服务器↔Android↔单台 DUT 全链路，建立工程骨架与 CI。,
+Epic,M2 调度核心,,M2：连接槽调度（轮转/抢占/老化/动态槽数）,High,,milestone,,目标：实现 20+ 设备 × 2~5 槽的时分复用调度，兑现 SDD 5/6 章全部策略。,
+Epic,M3 轮询处理链,,M3：虚拟轮询计划 + Decoder + 规则引擎 + 通知通道,High,,milestone,,目标：轮询虚拟化、结果处理链（Decoder→RuleEngine→ActionExecutor）与 GATT 通知保槽。,
+Epic,M4 文件传输,,M4：OTA/文件下发（TCP 下载 + GATT 分块 + 断点续传 + pinned）,High,,milestone,,目标：MB 级文件经 服务器→Android→DUT 链路可靠下发，长任务与槽位调度协同。,
+Epic,M5 加固验收,,M5：异常/权限/日志/安全加固与 24h 稳定性验收,High,,milestone,,目标：系统异常兜底、可观测性、安全落地，达到 14.3 验收基线。,
+Story,,M1 骨架打通,[M1-1] 工程脚手架与包结构,High,3,"infra,ci",§16.2,"创建 Android 工程，按 16.2 落地包划分与依赖规则（跨包只走 16.1 接口），接入 CI。
+
+需求依据：SDD V1.5 §16.2",包结构与 16.2 完全一致；model 包零依赖有自动化检查；CI 跑通 lint+单测
+Story,,M1 骨架打通,[M1-2] 前台 Service 与进程存活,High,3,infra,"§7.1, §12.10","AgentService 前台服务 + PARTIAL_WAKE_LOCK；启动→TCP 连接→注册→收 REGISTER_ACK→设备 REGISTERED。
+
+需求依据：SDD V1.5 §7.1, §12.10",灭屏/切后台 30 分钟进程与 TCP 连接存活；启动流程符合 7.1 五步
+Story,,M1 骨架打通,[M1-3] TCP 通信层与分帧解复用,High,5,tcp,"§3.1, §16.3, 附录A.1","TcpClient/ProtocolCodec/HeartbeatManager/FileFrameCodec；断线指数退避重连 + 本地缓存补报。
+
+需求依据：SDD V1.5 §3.1, §16.3, 附录A.1",JSON 长度前缀/二进制帧解复用单测覆盖 16.3 全部规则；断网 60s 重连后缓存补报成功；心跳周期可配（heartbeatIntervalMs）
+Story,,M1 骨架打通,[M1-4] 协议模型与命令对账骨架,High,5,"tcp,protocol","§10, 附录A, §12.9","按附录 A 建立全量消息模型与编解码；CMD_ACK/错误码/rawStatus 透传机制。
+
+需求依据：SDD V1.5 §10, 附录A, §12.9",19 命令+18 事件全字段序列化/反序列化单测；requestId→CMD_ACK 对账 mock 通过；错误码表（含 2004/rawStatus）落地
+Story,,M1 骨架打通,[M1-5] 设备状态机与迁移表,High,5,"ble,statemachine","§4, §4.1, §4.2","实现 DeviceState 枚举与状态机，迁移合法性以 4.1 表为唯一事实来源。
+
+需求依据：SDD V1.5 §4, §4.1, §4.2",4.1 全迁移表参数化单测：合法迁移全通、非法迁移抛 IllegalStateException（§14.1 状态机用例）
+Story,,M1 骨架打通,[M1-6] BleCentralManager 与单设备直连,High,5,ble,"§3.2, §3.3, §7.2","DeviceRegistry + DeviceController 创建注册；connectGatt/服务发现/MTU 阶梯/notify 订阅；幂等注册与 lazyConnect 参数。
+
+需求依据：SDD V1.5 §3.2, §3.3, §7.2",真实 DUT 从 CONNECT_DEVICE 到 READY 全链路；MTU 阶梯（512→247→185→23）记录实际值；DEVICE_STATE(READY) 上报
+Story,,M1 骨架打通,[M1-7] GattExecutor 单线程版与读写闭环,High,5,ble,"§3.8, §7.4, §12.2","GATT 操作串行执行器（单线程先行）；READ/WRITE 超时重试与失败上报。
+
+需求依据：SDD V1.5 §3.8, §7.4, §12.2",mock DUT 读写闭环；3s 超时+重试一次；错误码与 rawStatus 透传正确
+Story,,M2 调度核心,[M2-1] ConnectionSlotManager,High,3,schedule,"§3.4, §8.2, §12.5","acquire/release/forceRelease 三接口；槽位占用巡检防泄漏。
+
+需求依据：SDD V1.5 §3.4, §8.2, §12.5",槽位上限强约束单测；占用时长巡检；挂起操作 forceRelease 故障注入用例通过（§14.2）
+Story,,M2 调度核心,[M2-2] ConnectionScheduler 请求队列与幂等 upsert,High,5,schedule,"§3.6, §5.1, §8.3","连接请求登记/取消/过期；需求来源优先级表（含重连随欠账）落地。
+
+需求依据：SDD V1.5 §3.6, §5.1, §8.3",同 deviceMac 重复 requestSlot 不重复排队（upsert）；优先级降序+时间升序排序正确；cancelRequest 生效
+Story,,M2 调度核心,[M2-3] selectVictim 抢占策略,High,5,schedule,"§5.2, §16.5","牺牲者选择算法；与通知保槽（7.3.3）联动。
+
+需求依据：SDD V1.5 §5.2, §16.5",16.5 selectVictim 伪代码语义单测全覆盖：pinned/persistent/notifyBoostUntil 过滤、空闲优先、可延迟次选、全不可踢返回 null
+Story,,M2 调度核心,[M2-4] 时间片轮转与建连预算,High,5,schedule,"§5.2, §6.2, §16.5","时间片推进 + setupBudgetMs 兜底；一轮时长按 6.4 公式（含建连开销）实测记录。
+
+需求依据：SDD V1.5 §5.2, §6.2, §16.5",切片自 READY 起算、到期且队列空才释放换组；建连超 setupBudgetMs 强制释放（故障注入用例 §14.2）；3 槽 6 设备轮转时序与 16.5 一致
+Story,,M2 调度核心,[M2-5] 冷却过滤与欠账老化,High,5,schedule,"§5.2 第5/6条, §16.5","coolDownUntil 分配侧过滤；effectivePriority 老化（每步升一级封顶 HIGH）。
+
+需求依据：SDD V1.5 §5.2 第5/6条, §16.5",被踢设备冷却期内不获槽；命令洪泛下轮询欠账最晚 2×agingThresholdMs 获槽（§14.3 验收项）
+Story,,M2 调度核心,[M2-6] SET_MAX_CONNECTIONS 动态调整,Medium,3,schedule,"§5.4, §12.9","槽位数在线调整与驱逐策略。
+
+需求依据：SDD V1.5 §5.4, §12.9",调大立即补位；调小按驱逐序选择牺牲者；低于常驻+pinned 拒绝并回 3003（携带 required/max）；越界回 3003（§14.1 动态配置用例）
+Story,,M2 调度核心,[M2-7] 常驻设备语义,Medium,3,schedule,"§5.2, §8.1, §8.2","isPersistent 与 pinned 的区分落地（8.2 注释语义）。
+
+需求依据：SDD V1.5 §5.2, §8.1, §8.2",SET_PERSISTENT_DEVICE 生效后常驻设备不被驱逐、不被空闲释放；CONNECTION_SLOT 事件携带正确 reason
+Story,,M3 轮询处理链,[M3-1] PollingScheduler 虚拟轮询计划,High,5,poll,"§6.1, §3.9, §6.4","nextPollTime 虚拟时钟、欠账登记、完成时起算周期；tickIntervalMs 约束。
+
+需求依据：SDD V1.5 §6.1, §3.9, §6.4",未连接设备计划照常推进；防重入（任务未完只标记不入队）；tick 超 min/2 时告警并钳制（§14.1 Schema 用例）
+Story,,M3 轮询处理链,[M3-2] PollingTask 动作序列,High,3,poll,"§7.3.1, §8.6","PollStep 串行执行模型；QueuedTask 入队与 TTL（7.4.1）。
+
+需求依据：SDD V1.5 §7.3.1, §8.6",先写后读/特征依赖/多步序列三类场景 mock 通过；任一步失败重试一次后中止上报；readCharacteristics 简写兼容
+Story,,M3 轮询处理链,[M3-3] Decoder 与 FieldMapping,High,5,poll,"§7.3.2, §8.9, §16.4 fields","特征 UUID→字段值解析；fields 配置加载与完整性校验。
+
+需求依据：SDD V1.5 §7.3.2, §8.9, §16.4 fields",9 种 format+scale/byteOrder/byteOffset 解析单测；规则引用无映射字段时拒绝加载并上报配置错误；未映射特征按 hex 原样上报
+Story,,M3 轮询处理链,[M3-4] RuleEngine 与 ActionExecutor,High,5,poll,"§7.3.2, §8.7","声明式规则求值与动作词表落地；复杂逻辑 PollResultHandler 兜底接口。
+
+需求依据：SDD V1.5 §7.3.2, §8.7",阈值边界/priority/stopOnMatch 语义单测（§14.1）；六类动作（REPORT_EVENT/EXECUTE_GATT/SET_INTERVAL/SET_DEVICE_STATE/RELEASE_SLOT/FILE_TRANSFER）全部可执行
+Story,,M3 轮询处理链,[M3-5] 结果缓存与上报策略,Medium,3,"poll,report","§6.3, §7.3, §10.3","轮询缓存、变化检测、过期标记与事件上报。
+
+需求依据：SDD V1.5 §6.3, §7.3, §10.3",reportOnlyChanged=true 时仅变化上报；stale 标记仅 onPollCompleted 清除（6.1 唯一时机）；POLL_DATA_STALE 携带 lastPollTime+reason、不带 errorCode（12.9）
+Story,,M3 轮询处理链,[M3-6] GATT 通知通道与保槽,High,5,"ble,poll","§7.3.3, §6.4","onCharacteristicChanged 抛 BLE Executor 进处理链；通知节流防 TCP 拥塞。
+
+需求依据：SDD V1.5 §7.3.3, §6.4",CONFIGURING 阶段按 notifyCharacteristics 订阅；通知期 notifyBoostUntil 生效不被 selectVictim 抢占、过期自动回落；notifyMinReportIntervalMs 节流生效
+Story,,M4 文件传输,[M4-1] TCP 侧文件下载,High,5,"transfer,tcp","§7.6 下载协议, §16.3, 附录A.2/A.3","二进制帧接收落盘；断点续传 seq 口径。
+
+需求依据：SDD V1.5 §7.6 下载协议, §16.3, 附录A.2/A.3",FILE_DOWNLOAD_READY/ACK/RESUME 全流程；逐帧 crc16 校验失败请求重传；整体 SHA-256 校验；断连后以 lastSeq 续传且口径与 16.3 一致
+Story,,M4 文件传输,[M4-2] 本地存储管理,Medium,3,transfer,§7.6 本地存储管理,"传输缓存目录、配额与清理策略。
+
+需求依据：SDD V1.5 §7.6 本地存储管理",diskQuotaMb 超限拒绝新任务并上报；失败任务保留 failedTaskRetentionDays 后清理；可用空间不足暂停接收并上报 ERROR
+Story,,M4 文件传输,[M4-3] BLE 分块传输与窗口 ACK,High,5,"transfer,ble",§7.6 传输机制/传输协议,"TransferAdapter 接入 DUT 协议；握手→分块→窗口 ACK→完成校验。
+
+需求依据：SDD V1.5 §7.6 传输机制/传输协议",WRITE_NO_RESPONSE 分块；窗口 CRC+NAK 重发；分块 30s 无响应暂停上报；1MB 文件真机传输成功率与吞吐记录（对照 10~30KB/s 前提）
+Story,,M4 文件传输,[M4-4] pinned 槽位与调度协同,High,5,"transfer,schedule",§7.6 长任务与槽位调度,"pin/unpin 与 ConnectionScheduler 联动；槽位预算收缩事件上报。
+
+需求依据：SDD V1.5 §7.6 长任务与槽位调度",传输期间设备不被时间片/抢占踢出；并发上限 maxConcurrentTransfers 生效、超额排队；传输设备轮询暂停、完成恢复；传输期间其他设备轮询不饿死（§14.2）
+Story,,M4 文件传输,[M4-5] 断点续传与取消,High,5,transfer,"§7.6, §8.8","transferredOffset 持久跟踪；supportsOffsetWrite 适配。
+
+需求依据：SDD V1.5 §7.6, §8.8",连接中断重连后从 transferredOffset 续传（支持偏移写入时）；不支持则从头重传；FILE_CANCEL 任意时刻可取消并上报 FILE_RESULT(cancelled/2004)
+Story,,M4 文件传输,[M4-6] 规则触发 FILE_REQUEST 通路,Medium,3,"transfer,poll","§7.3.2, §10.2, 附录A.3","打通规则引擎触发自动 OTA 的取文件回路。
+
+需求依据：SDD V1.5 §7.3.2, §10.2, 附录A.3",规则命中 FILE_TRANSFER 动作→FILE_REQUEST 上行→服务器补发 FILE_TRANSFER→传输闭环 mock 全流程通过
+Story,,M5 加固验收,[M5-1] 断线重连与放槽语义,High,5,"ble,schedule","§7.5, §4.1, §16.5","onConnectionStateChange 异常路径；退避 1s→60s 封顶、maxReconnectAttempts 后 ERROR。
+
+需求依据：SDD V1.5 §7.5, §4.1, §16.5",异常断开立即放槽；RECONNECTING 退避不持槽；到期经 WAITING_SLOT 按欠账优先级重排；GATT 133 风暴故障注入行为正确（§14.2）
+Story,,M5 加固验收,[M5-2] 设备生命周期命令闭环,High,5,ble,"§7.7, §7.8, §12.9","REMOVE/PAUSE/RESUME/RESET 四命令完整实现与对账。
+
+需求依据：SDD V1.5 §7.7, §7.8, §12.9",REMOVE/RESET 清理队列逐条回 2004，服务器无悬挂 requestId（§14.1）；PAUSE 连接中 pendingPause 延迟生效；pinned 传输挂起/中止两种路径；RESET 回冷启动等价态
+Story,,M5 加固验收,[M5-3] 系统异常与权限兜底,High,5,infra,"§12.10, §11","广播监听、Doze 应对、运行时权限检查与降级。
+
+需求依据：SDD V1.5 §12.10, §11",蓝牙关闭仅连接态设备迁 DISCONNECTED（4.1 合法迁移内）、恢复后按欠账重建；省电白名单未加入上报 ERROR；缺权限进受限模式（§14.2 系统异常用例）
+Story,,M5 加固验收,[M5-4] 日志与可观测性,Medium,3,log,"§13, §10.2","分级日志、崩溃捕获、按需上传、运行时统计。
+
+需求依据：SDD V1.5 §13, §10.2",滚动日志环形覆盖不撑爆磁盘；崩溃日志下次启动随注册上报；UPLOAD_LOG 二进制帧上传+LOG_UPLOAD_DONE；CONNECTION_STATISTICS 指标齐全
+Story,,M5 加固验收,[M5-5] 安全落地,High,3,security,§11,"token 认证、MAC 白名单、脱敏白名单、可选 TLS。
+
+需求依据：SDD V1.5 §11",无 token/错 token 接入被拒；非白名单 MAC 不接入；日志脱敏扫描无凭据明文；TLS 可选启用且握手失败不降级明文
+Story,,M5 加固验收,[M5-6] 24h 稳定性与性能验收,High,8,test,"§14.2, §14.3","量产前验收门槛；产出实测报告并回填 14.3 基线。
+
+需求依据：SDD V1.5 §14.2, §14.3",20 台+3 槽 24h：内存增长<10%、槽位泄漏=0、GATT 失败率<5%；一轮耗时 ≤ 6.4 公式×1.2；命令延迟 P95 达标（已连接<2s/未连接<setupBudget+timeSlice×动态槽数）
+Story,,M5 加固验收,[M5-7] 配置热更新与版本化,Medium,3,config,"§16.4, §6.4","配置加载/更新/校验/兜底默认值全链路。
+
+需求依据：SDD V1.5 §16.4, §6.4",configVersion 单调应用、低版本晚到丢弃；更新整项替换下一 tick 原子生效；tick/setupBudget/aging 等 22 旋钮校验与钳制告警用例通过（§14.1 Schema 用例）

@@ -1,0 +1,148 @@
+﻿用例ID,SDD章节,用例标题,用例类型,优先级,前置条件,测试步骤,预期结果,真机环境/工具
+TC04-01,§4/§7.2,正常连接迁移链完整上报,功能,P0,1 台 Android 手机 + mock 服务器 + 1 台 DUT；DUT 上电可连,"1) 服务器下发 CONNECT_DEVICE
+2) 观察 DEVICE_STATE 事件序列",依次上报 WAITING_SLOT→CONNECTING→SERVICE_DISCOVERING→CONFIGURING→READY；READY 在 connectTimeoutMs(10s) 内到达；CMD_ACK errorCode=0,正常环境
+TC04-02,§4.1,非法迁移被拦截,异常,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；需 Agent 内置故障注入/debug 接口,"1) 设备 CONNECTING 期间注入 GATT 回调乱序/直接置 READY 的非法事件
+2) 观察日志",状态机抛 IllegalStateException 且被捕获记录；不出现 4.1 表外迁移；无未捕获崩溃,需 Agent 内置故障注入/debug 接口
+TC04-03,§4.1/§7.7,ERROR→TERMINATED 迁移,功能,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；DUT 关机使其不可连,"1) 等设备重连失败进入 ERROR
+2) 服务器下发 REMOVE_DEVICE",DEVICE_STATE(state=TERMINATED) 上报；设备从注册表消失,DUT 可远程断电
+TC04-04,§4.1/§7.7,PAUSED 阻断一切调度,功能,P0,1 台 Android 手机 + mock 服务器 + 3 台 DUT,"1) PAUSE_DEVICE 一台设备
+2) 等其轮询到期
+3) 观察槽位分配",PAUSED 设备不申请/不获得槽位；其余设备调度不受影响,
+TC04-05,§4.1/§7.2,重发 CONNECT_DEVICE 恢复 ERROR 设备,功能,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；设备已处 ERROR,"1) 恢复 DUT 供电
+2) 服务器重发 CONNECT_DEVICE",设备经 ERROR→REGISTERED→…→READY；重连计数清零；CMD_ACK errorCode=0,
+TC04-06,§4.1/§12.10,蓝牙关闭的批量迁移合法性,异常,P0,1 台 Android 手机 + mock 服务器 + 3 台 DUT；1 台已 READY、1 台 PAUSED、1 台 REGISTERED,"1) 手机关闭蓝牙
+2) 观察各设备状态与事件
+3) 重新打开蓝牙",仅连接态/连接中设备迁 DISCONNECTED 且槽位全释放；PAUSED/REGISTERED 设备状态不变；无非法迁移异常；恢复后按欠账重建调度,
+TC05-01,§5.2,槽位上限硬约束,功能,P0,1 台 Android 手机 + mock 服务器 + 6 台 DUT；maxSlots=3、轮询间隔 30s,"1) 等 6 台全部轮询到期
+2) 观察 TOPOLOGY/CONNECTION_SLOT_* 事件",任意时刻在线 ≤3 台；槽位获取/释放事件成对出现,
+TC05-02,§5.2 第2条,高优先级命令抢占,功能,P0,1 台 Android 手机 + mock 服务器 + 3 台 DUT；3 台均 READY 空闲、槽满,"1) 对未连接的第 4 台下发 WRITE_CHAR
+2) 观察踢出选择",最久空闲且无任务的设备被踢（DISCONNECTED 保留队列）；新设备获槽执行命令并回 CMD_ACK,第 4 台 DUT
+TC05-03,§5.2 第5条,冷却防抖,功能,P1,1 台 Android 手机 + mock 服务器 + 3 台 DUT；cooldownMs=5000,"1) 制造抢占使设备 A 被踢
+2) 5s 内观察 A 是否立即重新获槽",coolDownUntil 内 A 不获槽；冷却结束后按欠账正常获槽,
+TC05-04,§5.2 第6条/§14.3,欠账老化防饿死,异常,P0,1 台 Android 手机 + mock 服务器 + 3 台 DUT；agingThresholdMs=30s,"1) 服务器持续对一台空闲设备洪泛 HIGH 命令占满槽位
+2) 另一台轮询欠账等待
+3) 记录获槽时间",轮询欠账最晚 2×agingThresholdMs(60s) 内获槽；日志可见有效优先级提升,
+TC05-05,§5.2 第1条,常驻设备不被驱逐,功能,P1,1 台 Android 手机 + mock 服务器 + 6 台 DUT；SET_PERSISTENT_DEVICE 指定 A,"1) A 常驻后制造多轮抢占与空闲超时
+2) 长跑 2h",A 始终持槽；selectVictim 从不选中 A；其余槽正常轮转,
+TC05-06,§5.4,调大槽位立即补位,功能,P1,1 台 Android 手机 + mock 服务器 + 6 台 DUT；maxSlots 3→5,"1) 运行中下发 SET_MAX_CONNECTIONS(5)
+2) 观察等待队列",新槽立即生效；等待队列按优先级补位；CMD_ACK errorCode=0,
+TC05-07,§5.4,调小槽位按序驱逐,功能,P1,1 台 Android 手机 + mock 服务器 + 6 台 DUT；maxSlots 5→2,"1) 5 台在线（含 1 常驻）
+2) 下发 SET_MAX_CONNECTIONS(2)",按 空闲非常驻→可延迟任务 顺序驱逐；最终在线=2；被踢设备保留欠账,
+TC05-08,§5.4/§12.9,驱逐失败拒绝调整,异常,P1,maxSlots=3 且常驻+pinned=2；1 台文件传输中,1) 下发 SET_MAX_CONNECTIONS(1),拒绝调整、已连状态不变；CMD_ACK errorCode=3003 且报文带 required=2/max=1,含传输任务
+TC05-09,§5.4/§12.9,槽位参数越界,异常,P2,,1) 分别下发 SET_MAX_CONNECTIONS(1) 与 (6),均回 3003，不归入 2001 协议错误；配置不变,
+TC06-01,§6.1,虚拟轮询计划与欠账补采,功能,P0,1 台 Android 手机 + mock 服务器 + 6 台 DUT；maxSlots=2、intervalMs=30s,"1) 6 台到期仅 2 槽
+2) 观察未获槽设备后续行为",未连接设备到期记欠账（不丢失）；获槽后补采并更新 nextPollTime,
+TC06-02,§6.1,欠账防重入,功能,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；人为阻塞 GATT 回调（故障注入）,"1) 轮询任务执行中跨过多个 tick 与下一个到期点
+2) 检查 pendingCommands",同设备轮询任务不重复堆积；队列中同设备 PollingTask ≤1,需 Agent 内置故障注入/debug 接口
+TC06-03,§6.2/§6.4,一轮时长符合公式,性能,P0,1 台 Android 手机 + mock 服务器 + 20 台 DUT（可用其余手机+nRF Connect 模拟）；maxSlots=4(1 常驻+3 动态)、时间片 2s、setupBudgetMs=4s,"1) 运行一轮完整轮询
+2) 实测一轮耗时",一轮 ≈ ceil(19/3)×(4+2)=42s 量级；≤ 公式×1.2（§14.3 基线）,秒表/日志统计
+TC06-04,§6.4,intervalMs 小于一轮时长的退化告警,功能,P2,1 台 Android 手机 + mock 服务器 + 6 台 DUT；故意配 intervalMs=10s（一轮约 12s）,"1) 下发过小 intervalMs
+2) 观察日志与 stale 标记",出现告警日志；实际频率退化为一轮一次；数据持续带 stale 标记,
+TC06-05,§6.4/§16.4,tick 周期钳制,功能,P1,配置最小 intervalMs=200ms、tickIntervalMs=200,"1) 启动 Agent
+2) 观察告警与生效 tick",告警日志出现；tick 被钳制到 100ms（min/2）；200ms 间隔设备实际轮询周期 ≈200ms,
+TC06-06,§6.1,stale 清除时机唯一,功能,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；使设备长期未获槽（stale=true）,"1) 设备获槽并 READY 但不执行轮询（注入跳过）
+2) 随后正常轮询一轮",仅获槽/命令执行不清除 stale；完整轮询走完 onPollCompleted 后 stale=false,需 Agent 内置故障注入/debug 接口
+TC06-07,§6.1,轮询周期自完成起算,功能,P2,1 台 Android 手机 + mock 服务器 + 1 台 DUT；intervalMs=30s,1) 记录连续 5 轮的完成时间与 nextPollTime,nextPollTime=完成时刻+30s；长时间运行无任务堆积漂移,
+TC07-01,§7.1,冷启动注册流程,功能,P0,1 台 Android 手机 + mock 服务器；服务器在线,"1) 启动 Agent
+2) 观察 REGISTER 与 REGISTER_ACK",REGISTER 携带 deviceId/ip/port/androidSdk/bleSupported/maxConnections/agentVersion/token（附录 A.3）；收到配置后设备全部 REGISTERED、不主动连接,
+TC07-02,§7.2,CONNECT_DEVICE 即时连接语义,功能,P0,1 台 Android 手机 + mock 服务器 + 1 台 DUT,"1) 下发 CONNECT_DEVICE(lazyConnect 缺省)
+2) 等待结果",设备作为 HIGH 需求立即获槽连接；ACK 在 READY 后返回、语义为'已就绪',
+TC07-03,§7.2,CONNECT_DEVICE 幂等,功能,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；设备已 READY,1) 重复下发 3 次 CONNECT_DEVICE,不重复创建 Controller；注册表同 MAC 仅 1 条；每次都回 CMD_ACK 成功,
+TC07-04,§7.2,lazyConnect 仅注册,功能,P2,1 台 Android 手机 + mock 服务器 + 1 台 DUT,"1) 下发 CONNECT_DEVICE(lazyConnect=true)
+2) 观察 1 分钟",设备停留 REGISTERED 不连接；待轮询到期或新命令才触发连接,
+TC07-05,§7.3.1,先写后读复杂轮询,功能,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；DUT 固件支持 写请求码→读响应 特征对,"1) 配置含 WRITE+READ 的 PollingTask
+2) 等一轮轮询",PollStep 按序串行；任一步失败重试一次后中止并上报错误；POLL_RESULT 字段组合正确,
+TC07-06,§7.3.2,规则命中触发动作,功能,P0,1 台 Android 手机 + mock 服务器 + 1 台 DUT；DUT 可上报温度；SET_POLL_RULES 下发温度分档规则,"1) 使 DUT 温度 >40℃
+2) 观察事件与轮询间隔",本地求值（不经服务器往返）；REPORT_EVENT(TEMP_CRITICAL) 上报；SET_INTERVAL 生效，间隔变为 5s,热风枪/恒温箱
+TC07-07,§7.3.2,priority 与 stopOnMatch 语义,功能,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；配置 20/40℃ 两档规则,"1) 温度 42℃（stopOnMatch=false）
+2) 改配 stopOnMatch=true 后复测",false 时 TEMP_WARN 与 TEMP_CRITICAL 都上报；true 时仅高优先级档上报,
+TC07-08,§7.3.2,SET_DEVICE_STATE 只写业务标记,功能,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；配置命中后 SET_DEVICE_STATE=OVERTEMP 的规则,"1) 触发规则
+2) GET_STATUS 查看设备",stateFlag=OVERTEMP；DeviceState 状态机状态不被修改,
+TC07-09,§7.3.2/§12.3,服务器断连时规则自治,异常,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；已下发规则,"1) 断开 TCP（断网/杀 mock 服务器）
+2) 触发规则条件",规则本地照常执行；事件本地缓存；TCP 恢复后补报,
+TC07-10,§7.3.3,通知触发上报与保槽,功能,P0,1 台 Android 手机 + mock 服务器 + 6 台 DUT；maxSlots=2；1 台已连接且订阅 notify 特征,"1) DUT 主动推 notify
+2) 观察上报与调度",通知经 Decoder→RuleEngine 后立即上报（不等轮询）；notifyBoostUntil 期间该设备不被 selectVictim 踢出；过期后恢复可踢,
+TC07-11,§7.3.3,高频通知节流,异常,P2,1 台 Android 手机 + mock 服务器 + 1 台 DUT；DUT 以 50ms 间隔推流式 notify,"1) notifyMinReportIntervalMs=200
+2) 统计上行报文速率",上报速率 ≤5 条/s；BLE 接收无丢弃；TCP 无拥塞,
+TC07-12,§7.4,未连接设备命令排队执行,功能,P0,1 台 Android 手机 + mock 服务器 + 3 台 DUT；目标设备未连接,"1) 下发 READ_CHAR
+2) 观察流程",设备 WAITING_SLOT→获槽→连接就绪后执行；CMD_ACK 携带 requestId 与读取结果,
+TC07-13,§7.4.1,队列背压上限,异常,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；目标设备离线（不可连）,1) 连续下发 65 条命令（上限 64）,前 64 条入队；第 65 条立即回 CMD_ACK(3001 QUEUE_FULL)、不入队,mock 服务器脚本
+TC07-14,§7.4.1,命令 TTL 过期,异常,P2,1 台 Android 手机 + mock 服务器 + 1 台 DUT；设备离线；commandTtlMs=5min,1) 下发命令后保持设备离线 5 分钟以上,过期命令丢弃并回 CMD_ACK(3002 COMMAND_EXPIRED),可改小 TTL 加速测试
+TC07-15,§7.5,异常断开立即放槽与退避,异常,P0,1 台 Android 手机 + mock 服务器 + 3 台 DUT；maxSlots=2,"1) 设备 A READY 中突然断电
+2) 观察槽位与重连计时",A 立即释放槽位（其他设备可获槽）；RECONNECTING 不持槽；退避间隔呈 1/2/4/8s 递增,可远程断电的 DUT
+TC07-16,§7.5,重连超限进 ERROR,异常,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；DUT 持续关机,1) 等待重连耗尽 maxReconnectAttempts(5),进入 ERROR 并上报 DEVICE_STATE(ERROR+errorCode+rawStatus),
+TC07-17,§7.5,主动断开不自动重连,功能,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；设备 READY,"1) 服务器下发 DISCONNECT_DEVICE
+2) 观察 2 分钟",设备 DISCONNECTED；无 RECONNECTING；无重连尝试,
+TC07-18,§7.6,1MB 文件端到端传输,功能,P0,1 台 Android 手机 + mock 服务器 + 1 台 DUT；DUT 支持 OTA 写入与偏移,"1) 下发 FILE_TRANSFER(1MB)
+2) 观察全流程",下载→校验 SHA-256→握手→分块(WRITE_NO_RESPONSE)→窗口 ACK→DUT 校验→FILE_RESULT(0)；FILE_PROGRESS 按窗口上报；实测吞吐记录并对照 10~30KB/s 前提,1MB 测试固件
+TC07-19,§7.6/§8.8,传输中断断点续传,异常,P0,1 台 Android 手机 + mock 服务器 + 1 台 DUT；传输中,"1) 传输到 ~50% 时 DUT 断电 10s 再上电
+2) 观察续传",重连后从 transferredOffset 继续；不重传已完成窗口；最终 FILE_RESULT(0),
+TC07-20,§7.6/§12.8,CRC 错误窗口重发,异常,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；需 Agent 内置故障注入/debug 接口（注入窗口 CRC 错误）,"1) 注入单窗口 CRC 失败
+2) 连续注入 N 次",NAK 窗口内块重发；连续失败 N 次任务失败并上报 4002,需 Agent 内置故障注入/debug 接口
+TC07-21,§7.6/§5.x,传输期间槽位保护,功能,P0,1 台 Android 手机 + mock 服务器 + 6 台 DUT；1 台传输中（pinned）,"1) 传输期间制造轮询高峰
+2) 观察",传输设备不被时间片/抢占踢出；其轮询暂停、完成后恢复；其余设备用 N-1 槽正常轮询不饿死,
+TC07-22,§7.6/§16.4,并发传输上限与排队,功能,P2,1 台 Android 手机 + mock 服务器 + 3 台 DUT；maxConcurrentTransfers=1,1) 同时下发 2 个 FILE_TRANSFER,第 2 个任务排队；第 1 个完成后自动开始,
+TC07-23,§7.6,FILE_CANCEL 任意时刻取消,功能,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；传输中,1) 分别在 下载中/传输中 下发 FILE_CANCEL,两种时机均可取消；FILE_RESULT(errorCode=2004)；槽位解除 pinned 归还,
+TC07-24,§7.3.2/§7.6,规则触发自动 OTA 闭环,功能,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；规则：固件版本<X → FILE_TRANSFER(fileId 已登记),"1) DUT 上报旧版本号
+2) 观察",Android 上行 FILE_REQUEST→服务器补发 FILE_TRANSFER→自动完成升级；全程无人工干预,
+TC07-25,§7.6/§16.4,磁盘配额与空间不足,异常,P2,diskQuotaMb 配小（如 10MB）,"1) 下发超限文件任务
+2) 手机剩余空间不足时复测",超限拒绝新任务并上报；空间低于阈值暂停接收并上报 ERROR,
+TC07-26,§7.6/§12.8,分块无响应超时暂停,异常,P2,1 台 Android 手机 + mock 服务器 + 1 台 DUT；需 Agent 内置故障注入/debug 接口（DUT 不应答分块）,1) 传输中注入 30s 无响应,任务暂停并上报、等待服务器决策；不盲目重试占槽,需 Agent 内置故障注入/debug 接口
+TC07-27,§7.7,REMOVE 已连接设备的对账,功能,P0,1 台 Android 手机 + mock 服务器 + 1 台 DUT；设备 READY 且队列有 3 条命令、1 个传输中,1) 下发 REMOVE_DEVICE,当前 GATT 命令结束或中断→断开→槽归还；队列命令逐条回 CMD_ACK(2004)；传输中止报 FILE_RESULT(cancelled)；TERMINATED 上报；服务器无悬挂 requestId,
+TC07-28,§7.7,REMOVE 幂等,功能,P2,目标 MAC 不在注册表,1) 下发 REMOVE_DEVICE,直接回 CMD_ACK 成功；无副作用,
+TC07-29,§7.7,PAUSE 延迟生效与传输挂起,功能,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；设备 CONNECTING 中（或传输中）,"1) 连接中下发 PAUSE_DEVICE
+2) 传输中再测 abortTransfer=false/true",立即回 ACK(已受理)；连接中置 pendingPause、回 READY 后补迁 PAUSED；abortTransfer=false 挂起保留 transferredOffset、true 中止上报,
+TC07-30,§7.7,RESUME 恢复欠账与续传,功能,P1,接 TC07-29 挂起状态,1) 下发 RESUME_DEVICE,有欠账直接 WAITING_SLOT；挂起传输按断点续传恢复；暂停期入队命令按优先级消费,
+TC07-31,§7.8,RESET 软重置,功能,P1,1 台 Android 手机 + mock 服务器 + 3 台 DUT；多任务进行中,1) 下发 RESET,立即 ACK；进行中命令逐条回 2004、传输中止上报；全部断开、槽位清空；设备回 REGISTERED、轮询计划重置；注册表与配置保留；不重新 TCP 注册,
+TC09-01,§9/§3.7/§3.8,同设备 GATT 串行保障,异常,P1,1 台 Android 手机 + mock 服务器 + 3 台 DUT；BLE Executor 配 2 线程,"1) 对同一设备并发触发 读+写+notify 混合操作
+2) 分析 BLE 日志时间线",同设备操作无并发（MAC 分片落同一线程）；无 GATT 操作冲突错误；跨设备可并行,日志时间线分析
+TC09-02,§9,单调时钟抗 NTP 跳变,异常,P1,1 台 Android 手机 + mock 服务器 + 3 台 DUT；轮询运行中,"1) 手动把系统时间 +1 小时
+2) 再 -2 小时
+3) 观察调度",nextPollTime/TTL/cooldown/notifyBoost 全部不受影响；轮询节奏无突变；仅上报时间戳使用墙钟,手动改系统时间
+TC10-01,§10/附录A,全命令字段遍历对账,功能,P0,1 台 Android 手机 + mock 服务器；mock 服务器脚本,"1) 遍历下发附录 A.2 全部 19 条命令
+2) 检查每条 CMD_ACK",每条命令字段解析正确（缺必填→2001）；ACK 均带 requestId/errorCode；GET_STATUS 返回结构符合 A.3,mock 遍历脚本
+TC10-02,§16.3,JSON 与二进制帧混合解复用,功能,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；文件下载中,"1) 文件下载（二进制帧）期间下发 GET_STATUS（JSON）
+2) 反向：JSON 心跳期间推文件帧",两类流量互不干扰、无粘包错包；peek 0xAC42 判定无误判,
+TC10-03,§12.9,协议错误码,异常,P1,1 台 Android 手机 + mock 服务器,"1) 发送格式错误报文
+2) 发送未知命令
+3) 对不存在设备发命令",分别回 2001/2002/2003；Agent 不崩溃、连接保持,
+TC10-04,附录A.1,编码约定一致性,功能,P2,1 台 Android 手机 + mock 服务器,"1) WRITE_CHAR 携带 base64 payload
+2) 检查 MAC/UUID 大小写与短格式解析",base64 正确解码写入；MAC 大写冒号、UUID 4/8/128 位格式均解析正确（对照 profile 规则）,
+TC11-01,§11.2,Token 认证,安全,P0,mock 服务器开启 token 校验,"1) 正确 token 注册
+2) 无 token / 错误 token 注册",正确 token 注册成功；无/错 token 的 REGISTER_ACK 带 2xxx 拒绝,
+TC11-02,§11.2,MAC 白名单,安全,P1,周围存在未登记 BLE 设备广播,"1) 开启扫描
+2) 观察未登记设备",扫描结果不自动接入；仅服务器下发 MAC 进注册表,额外 BLE 设备若干
+TC11-03,§11.2,TLS 启用与不降级,安全,P2,服务器配 TLS（含错误证书场景）,"1) 启用 TLS 正常连接
+2) 配置错误证书复测",正常场景加密连通；握手失败不降级明文、按重连策略退避并告警,
+TC11-04,§11.3,日志脱敏扫描,安全,P1,已产生凭据类报文交互,"1) 导出全部日志
+2) 关键字扫描 token/凭据",日志与报文样例无凭据/token 明文；敏感字段按白名单未上报,日志扫描脚本
+TC12-01,§12.1/§7.5,GATT 133 风暴,异常,P0,1 台 Android 手机 + mock 服务器 + 3 台 DUT；制造弱信号环境（屏蔽箱/远距离/反复上断电）,"1) 持续 30 分钟连接风暴
+2) 观察调度与失败率",放槽+退避+老化行为正确；无槽位泄漏；133 按来源区分处理（连接回调→重连/操作回调→重试）；蓝牙栈不崩溃,屏蔽箱或金属容器
+TC12-02,§12.5,槽位泄漏防护,异常,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；需 Agent 内置故障注入/debug 接口（挂起 GATT 回调）,"1) 注入操作挂起不回调
+2) 等待超时",GattExecutor 超时后主动断开释放槽位；巡检强制释放生效；槽位计数最终归位,需 Agent 内置故障注入/debug 接口
+TC12-03,§12.3,TCP 断线自治与补报,异常,P0,1 台 Android 手机 + mock 服务器 + 3 台 DUT；运行中断开手机网络 5 分钟,"1) 断网期间让设备产生轮询/规则事件
+2) 恢复网络",BLE 侧按本地配置继续工作；事件本地缓存（≤reportBufferMax=1000）；恢复后按序补报无丢失,
+TC12-04,§12.10,飞行模式恢复重建,异常,P1,1 台 Android 手机 + mock 服务器 + 3 台 DUT；全部 READY,"1) 开飞行模式 2 分钟
+2) 关闭",关闭蓝牙期停止连接尝试、指数退避探测；恢复后按欠账重建调度；欠账未清零,
+TC12-05,§12.6/§12.10,进程被杀冷启动恢复,异常,P0,1 台 Android 手机 + mock 服务器 + 3 台 DUT；运行中,"1) 强杀 Agent 进程
+2) 重新拉起",走 7.1 冷启动：设备 REGISTERED 不主动连接、按需恢复；磁盘持久化的未上报缓存补报不丢失,
+TC12-06,§12.10,省电白名单检测,功能,P2,手机未加入厂商省电白名单,1) 启动 Agent,检测未加入并上报 ERROR 提示；引导页跳转正确,小米/华为/OPPO 各 1 台
+TC12-07,§12.10,蓝牙权限缺失受限模式,异常,P1,安装后拒绝 BLUETOOTH_SCAN/CONNECT,1) 启动 Agent,进入受限模式：仅上报不操作 BLE；权限引导提示出现；授权后自动恢复全功能,Android 12+ 机型
+TC12-08,§12.7,高温/低内存自动降频,异常,P2,手机加热或内存占用注入,1) 触发温度/内存异常阈值,轮询 intervalMs 自动调大并上报服务器；恢复后回到配置值,加热台/内存压力工具
+TC12-09,§12.8/§7.6,磁盘不足暂停接收,异常,P2,手机剩余空间低于阈值,1) 下发文件任务,暂停接收新任务并上报 ERROR；已有任务状态不破坏,
+TC12-10,§5.2/§12.5,建连超预算强释放,异常,P1,1 台 Android 手机 + mock 服务器 + 1 台 DUT；需 Agent 内置故障注入/debug 接口（连接挂起不应答）,1) 注入建连挂起超过 setupBudgetMs(4s),强制释放槽位并计一次连接失败；转入重连策略；槽位被后续设备使用,需 Agent 内置故障注入/debug 接口
+TC13-01,§13,滚动日志环形覆盖,功能,P2,DEBUG 级全开跑 2h+,1) 产生超 50MB 日志,按 10MB×5 环形覆盖；磁盘占用恒定；无日志丢失关键 ERROR,
+TC13-02,§13,UPLOAD_LOG 上传,功能,P1,1 台 Android 手机 + mock 服务器,1) 下发 UPLOAD_LOG(sinceTs/minLevel),按参数打包；经二进制帧上传；LOG_UPLOAD_DONE 携带 size；服务器可完整解包,
+TC13-03,§13,崩溃日志随注册上报,异常,P1,需 Agent 内置故障注入/debug 接口（注入 native/Java 崩溃）,"1) 触发崩溃
+2) 重启 Agent",崩溃信息写独立文件；下次启动随注册上报,需 Agent 内置故障注入/debug 接口
+TC13-04,§13/§10.2,CONNECTION_STATISTICS 指标完整,功能,P2,1 台 Android 手机 + mock 服务器 + 6 台 DUT；运行 1h,1) 检查周期上报内容,槽位使用率/切换次数/GATT 失败率/平均轮询耗时齐全且与日志可互证,
+TC14-01,§14.3,满配一轮轮询耗时,性能,P0,1 台 Android 手机 + mock 服务器 + 20 台 DUT（可用其余手机+nRF Connect 模拟）；maxSlots=4、intervalMs=60s,"1) 满配运行 10 轮
+2) 统计一轮耗时与资源占用",一轮 ≤ 6.4 公式×1.2；CPU/内存曲线平稳,性能监控
+TC14-02,§14.3,命令延迟 P95,性能,P1,1 台 Android 手机 + mock 服务器 + 20 台 DUT（可用其余手机+nRF Connect 模拟）；正常轮询负载,"1) 对已连接/未连接设备各发 100 条命令
+2) 统计延迟分布",已连接 P95<2s；未连接 P95<setupBudgetMs+timeSliceMs×动态槽数,脚本统计
+TC14-03,§14.2/§14.3,24h 长跑稳定性,稳定性,P0,1 台 Android 手机 + mock 服务器 + 20 台 DUT（可用其余手机+nRF Connect 模拟）；满配 24h,"1) 连续运行 24h
+2) 每小时记录指标",内存增长<10%；槽位泄漏=0；GATT 失败率<5%；无看门狗重启；蓝牙栈无需复位,老化架
+TC14-04,§14.3/§7.4.1,命令洪泛压测,性能,P1,1 台 Android 手机 + mock 服务器 + 6 台 DUT；脚本以 100 条/s 洪泛,1) 持续洪泛 10 分钟（含离线设备）,背压生效（3001）；队列深度有界；CPU/内存不失控；洪泛停止后积压正常消化,压测脚本
+TC14-05,§14.3,规则引擎压力,性能,P2,1 台 Android 手机 + mock 服务器 + 1 台 DUT；单设备 200 条规则,"1) 高频轮询结果喂入
+2) 统计单次求值耗时",单次求值耗时 < 轮询时间片的 10%；无 ANR,
+TC14-06,§15,2.4GHz 同室干扰,稳定性,P2,3+ 手机、20+ DUT、WiFi 满载同室,1) 满负载运行 2h,连接失败率可随干扰上升但重试/降速机制兜底；无大面积死连；统计上报正常,实验室环境
