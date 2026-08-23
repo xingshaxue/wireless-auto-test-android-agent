@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Wireless Auto Test Agent</string>
+    <string name="notification_channel_name">Agent Service</string>
+    <string name="notification_channel_description">Keeps the wireless auto-test agent running</string>
+    <string name="foreground_notification_title">Wireless Auto Test Agent</string>
+    <string name="foreground_notification_text">Running…</string>
+</resources>
