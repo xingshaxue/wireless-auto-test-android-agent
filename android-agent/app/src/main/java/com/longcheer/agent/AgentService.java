@@ -23,7 +23,7 @@ import android.provider.Settings;
 import android.util.Log;
 
 import com.longcheer.agent.ble.BleCentralManager;
-import com.longcheer.agent.ble.DeviceController;
+import com.longcheer.agent.model.DeviceController;
 import com.longcheer.agent.config.AgentConfig;
 import com.longcheer.agent.config.DeviceConfig;
 import com.longcheer.agent.dispatch.CommandDispatcher;

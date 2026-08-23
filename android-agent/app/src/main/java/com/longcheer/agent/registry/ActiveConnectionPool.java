@@ -1,6 +1,6 @@
 package com.longcheer.agent.registry;
 
-import com.longcheer.agent.ble.DeviceController;
+import com.longcheer.agent.model.DeviceController;
 
 import java.util.ArrayList;
 import java.util.Collections;

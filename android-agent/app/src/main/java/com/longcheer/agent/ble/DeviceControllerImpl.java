@@ -2,6 +2,7 @@ package com.longcheer.agent.ble;
 
 import android.os.SystemClock;
 
+import com.longcheer.agent.model.DeviceController;
 import com.longcheer.agent.model.DeviceState;
 import com.longcheer.agent.model.GattCommand;
 import com.longcheer.agent.model.ManagedDeviceInfo;

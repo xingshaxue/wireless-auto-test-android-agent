@@ -2,7 +2,7 @@ package com.longcheer.agent.schedule;
 
 import android.os.SystemClock;
 
-import com.longcheer.agent.ble.DeviceController;
+import com.longcheer.agent.model.DeviceController;
 import com.longcheer.agent.config.AgentConfig;
 import com.longcheer.agent.model.ConnectionRequest;
 import com.longcheer.agent.model.ConnectionSlot;

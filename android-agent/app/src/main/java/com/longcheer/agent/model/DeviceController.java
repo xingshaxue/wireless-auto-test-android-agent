@@ -1,4 +1,4 @@
-package com.longcheer.agent.ble;
+package com.longcheer.agent.model;
 
 import com.longcheer.agent.model.DeviceState;
 import com.longcheer.agent.model.GattCommand;

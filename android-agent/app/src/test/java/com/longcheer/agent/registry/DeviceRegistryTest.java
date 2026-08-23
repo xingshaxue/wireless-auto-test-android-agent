@@ -1,6 +1,6 @@
 package com.longcheer.agent.registry;
 
-import com.longcheer.agent.ble.DeviceController;
+import com.longcheer.agent.model.DeviceController;
 import com.longcheer.agent.model.DeviceState;
 import com.longcheer.agent.model.ManagedDeviceInfo;
 

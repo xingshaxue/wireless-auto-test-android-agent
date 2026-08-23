@@ -1,7 +1,7 @@
 package com.longcheer.agent.dispatch;
 
 import com.longcheer.agent.ble.BleCentralManager;
-import com.longcheer.agent.ble.DeviceController;
+import com.longcheer.agent.model.DeviceController;
 import com.longcheer.agent.config.AgentConfig;
 import com.longcheer.agent.model.DeviceState;
 import com.longcheer.agent.model.GattCommand;

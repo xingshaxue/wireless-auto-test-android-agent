@@ -1,5 +1,7 @@
 package com.longcheer.agent.ble;
 
+import com.longcheer.agent.model.DeviceController;
+
 /**
  * BLE 中心管理器接口（SDD §3.2 / §16.1）。
  */

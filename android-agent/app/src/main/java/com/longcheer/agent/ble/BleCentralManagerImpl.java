@@ -2,6 +2,7 @@ package com.longcheer.agent.ble;
 
 import android.bluetooth.BluetoothAdapter;
 
+import com.longcheer.agent.model.DeviceController;
 import com.longcheer.agent.registry.DeviceRegistry;
 
 import java.util.Map;

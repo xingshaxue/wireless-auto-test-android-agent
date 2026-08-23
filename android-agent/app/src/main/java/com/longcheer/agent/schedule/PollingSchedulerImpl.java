@@ -73,7 +73,7 @@ public class PollingSchedulerImpl implements PollingScheduler {
 
     @Override
     public void onPollCompleted(String mac, Map<UUID, byte[]> rawResults) {
-        com.longcheer.agent.ble.DeviceController controller = deviceRegistry.findByMac(mac);
+        com.longcheer.agent.model.DeviceController controller = deviceRegistry.findByMac(mac);
         if (controller == null) {
             pendingPollFlags.remove(mac);
             return;
@@ -102,7 +102,7 @@ public class PollingSchedulerImpl implements PollingScheduler {
 
         long now = SystemClock.elapsedRealtime();
 
-        for (com.longcheer.agent.ble.DeviceController controller : deviceRegistry.allControllers()) {
+        for (com.longcheer.agent.model.DeviceController controller : deviceRegistry.allControllers()) {
             String mac = controller.snapshot().getMac();
             PollingConfig cfg = configs.getOrDefault(mac, controller.snapshot().getPollingConfig());
             if (cfg == null || cfg.getIntervalMs() <= 0) {
