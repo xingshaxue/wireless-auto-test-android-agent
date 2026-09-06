@@ -58,6 +58,15 @@ public class PollingSchedulerImpl implements PollingScheduler, GattExecutorImpl.
     /** 轮询暂停中的设备（§7.6 文件传输期间，§7.7 语义由 DeviceController.PAUSED 覆盖）。 */
     private final java.util.Set<String> suspendedPolls =
             java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
+    /** 轮询计时：入队时间（onPollCompleted 计算耗时，§13 avgPollMs）。 */
+    private final Map<String, Long> pollStartAt = new ConcurrentHashMap<>();
+    /** 运行时统计（§13，可选注入）。 */
+    private volatile com.longcheer.agent.report.StatsCollector statsCollector;
+
+    /** 注入统计收集器（装配层调用，可为 null）。 */
+    public void setStatsCollector(com.longcheer.agent.report.StatsCollector collector) {
+        this.statsCollector = collector;
+    }
     private ScheduledExecutorService scheduler;
     private volatile boolean running = false;
     /** 钳制后的实际 tick 周期（§6.4 硬约束）。 */
@@ -167,6 +176,20 @@ public class PollingSchedulerImpl implements PollingScheduler, GattExecutorImpl.
     }
 
     @Override
+    public void resetAll() {
+        // §7.8：轮询计划重置（nextPollTime = now + interval），欠账标记清空。
+        long now = clock.getAsLong();
+        pendingPollFlags.clear();
+        for (DeviceController controller : deviceRegistry.allControllers()) {
+            PollingConfig cfg = resolveConfig(controller);
+            if (cfg != null && cfg.getIntervalMs() > 0) {
+                controller.updatePollTimes(0, now + cfg.getIntervalMs());
+            }
+        }
+        AgentLog.i(TAG, "all polling plans reset");
+    }
+
+    @Override
     public void onPollCompleted(String mac, Map<UUID, byte[]> rawResults) {
         DeviceController controller = deviceRegistry.findByMac(mac);
         if (controller == null) {
@@ -175,6 +198,15 @@ public class PollingSchedulerImpl implements PollingScheduler, GattExecutorImpl.
         }
         long now = clock.getAsLong();
         PollingConfig cfg = resolveConfig(controller);
+
+        // §13：平均轮询耗时统计。
+        Long startedAt = pollStartAt.remove(mac);
+        if (statsCollector != null) {
+            if (startedAt != null) {
+                statsCollector.onPollDuration(now - startedAt);
+            }
+            statsCollector.onGattResult(true);
+        }
 
         // §7.3 处理链：Decoder 解析 → RuleEngine 求值 → ActionExecutor 执行。
         Map<String, Object> fields = resultChain.process(mac, rawResults);
@@ -201,6 +233,10 @@ public class PollingSchedulerImpl implements PollingScheduler, GattExecutorImpl.
         // §7.3.1：任务中止 → 清防重入标记（否则该设备轮询永久停摆）；周期从完成时起算，
         // 失败轮不推进 nextPollTime，下一 tick 自然重新申请。
         pendingPollFlags.remove(mac);
+        pollStartAt.remove(mac);
+        if (statsCollector != null) {
+            statsCollector.onGattResult(false);
+        }
         AgentLog.w(TAG, "poll failed: " + mac + " errorCode=" + errorCode + " rawStatus=" + rawStatus);
         maybeReportStale(mac, "CONNECT_FAILED");
     }
@@ -270,10 +306,12 @@ public class PollingSchedulerImpl implements PollingScheduler, GattExecutorImpl.
             DeviceState state = controller.getState();
             if (state == DeviceState.READY) {
                 controller.enqueuePollTask(createSimpleTask(mac, cfg));
+                pollStartAt.put(mac, now); // §13 avgPollMs 计时起点
             } else if (POLL_REQUEST_STATES.contains(state)) {
                 connectionScheduler.requestSlot(
                         ConnectionRequest.now(mac, ConnectionRequest.PRIORITY_NORMAL,
                                 ConnectionRequest.Reason.POLL));
+                pollStartAt.put(mac, now);
             } else {
                 // CONNECTING/RECONNECTING/ERROR/PAUSED/TERMINATED 不在白名单，清标记等下轮。
                 pendingPollFlags.remove(mac);

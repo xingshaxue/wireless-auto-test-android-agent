@@ -11,6 +11,7 @@ import com.longcheer.agent.model.ManagedDeviceInfo;
 import com.longcheer.agent.model.PollRule;
 import com.longcheer.agent.model.PollingConfig;
 import com.longcheer.agent.model.PollingTask;
+import com.longcheer.agent.model.QueuedTask;
 
 import java.util.Collections;
 import java.util.List;
@@ -24,7 +25,7 @@ public class DeviceControllerImpl implements DeviceController {
     private static final String TAG = "DeviceController";
 
     private final ManagedDeviceInfo info;
-    private final DeviceStateMachine stateMachine = new DeviceStateMachine();
+    private DeviceStateMachine stateMachine = new DeviceStateMachine();
     private final Object lock = new Object();
     private volatile boolean pendingPause = false;
     private volatile boolean abortTransferOnPause = false;
@@ -231,6 +232,66 @@ public class DeviceControllerImpl implements DeviceController {
         }
     }
 
+    @Override
+    public void onAbnormalDisconnect() {
+        synchronized (lock) {
+            // §7.5：异常断开 → RECONNECTING（退避计时不持槽）。调用方须先释放槽位
+            // （onSlotReleased 已将设备置 DISCONNECTED）。
+            if (info.getState() == DeviceState.DISCONNECTED) {
+                transitionTo(DeviceState.RECONNECTING);
+            }
+        }
+    }
+
+    @Override
+    public void onReconnectBackoffExpired() {
+        synchronized (lock) {
+            if (info.getState() != DeviceState.RECONNECTING) {
+                return;
+            }
+            transitionTo(DeviceState.WAITING_SLOT);
+            // §7.7：暂停期间不申请槽位，补迁 PAUSED。
+            if (pendingPause) {
+                pendingPause = false;
+                transitionTo(DeviceState.PAUSED);
+            }
+        }
+    }
+
+    @Override
+    public void onReconnectGiveUp() {
+        synchronized (lock) {
+            if (info.getState() == DeviceState.RECONNECTING
+                    || info.getState() == DeviceState.DISCONNECTED) {
+                transitionTo(DeviceState.ERROR);
+            }
+        }
+    }
+
+    @Override
+    public java.util.List<QueuedTask> drainPendingCommands() {
+        synchronized (lock) {
+            java.util.List<QueuedTask> drained = new java.util.ArrayList<>(info.getPendingCommands());
+            info.getPendingCommands().clear();
+            return drained;
+        }
+    }
+
+    @Override
+    public void reset() {
+        synchronized (lock) {
+            // §7.8 软重置：状态机重建回 REGISTERED（RESET 不走 4.1 常规迁移）。
+            info.getPendingCommands().clear();
+            stateMachine = new DeviceStateMachine();
+            info.setState(DeviceState.REGISTERED);
+            info.setReconnectCount(0);
+            info.setStateFlag(null);
+            pendingPause = false;
+            abortTransferOnPause = false;
+            AgentLog.i(TAG, "device " + info.getMac() + " reset to REGISTERED");
+        }
+    }
+
     public ManagedDeviceInfo getInfo() {
         synchronized (lock) {
             return info;
@@ -249,7 +310,14 @@ public class DeviceControllerImpl implements DeviceController {
         AgentLog.i(TAG, "device " + info.getMac() + " state " + old + " -> " + newState);
         if (newState == DeviceState.READY) {
             info.setLastConnectedTime(SystemClock.elapsedRealtime());
+            info.setReconnectCount(0); // §7.5：重连成功清零计数
             drainPendingTasks();
+        }
+        // §7.7 pendingPause：连接中/活动中的暂停延迟到 READY 或 DISCONNECTED 补迁。
+        if (pendingPause && (newState == DeviceState.READY || newState == DeviceState.DISCONNECTED)) {
+            pendingPause = false;
+            AgentLog.i(TAG, "device " + info.getMac() + " apply pendingPause -> PAUSED");
+            transitionTo(DeviceState.PAUSED);
         }
         // TODO M1: 通过 StateReporter 上报 DEVICE_STATE。
     }

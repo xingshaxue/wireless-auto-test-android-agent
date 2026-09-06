@@ -321,6 +321,57 @@ public class CommandDispatcherTest {
     }
 
     @Test
+    public void testRemoveDeviceDrainsQueueWith2004() {
+        // §7.7：丢弃队列前逐条回 CMD_ACK 2004，服务器 requestId 不悬挂。
+        DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.WAITING_SLOT);
+        when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);
+        List<com.longcheer.agent.model.QueuedTask> queued = new ArrayList<>();
+        queued.add(GattCommand.simple("AA:BB:CC:DD:EE:FF", "cmd-1", GattCommand.Type.READ,
+                null, null, null, GattCommand.Priority.HIGH));
+        queued.add(GattCommand.simple("AA:BB:CC:DD:EE:FF", "cmd-2", GattCommand.Type.WRITE,
+                null, null, new byte[]{1}, GattCommand.Priority.HIGH));
+        when(controller.drainPendingCommands()).thenReturn(queued);
+
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "REMOVE_DEVICE");
+        cmd.put("requestId", "req-rm");
+        cmd.put("deviceMac", "AA:BB:CC:DD:EE:FF");
+
+        dispatcher.dispatch(cmd);
+
+        verify(stateReporter).reportCommandAck(eq("cmd-1"), eq(2004), any());
+        verify(stateReporter).reportCommandAck(eq("cmd-2"), eq(2004), any());
+        verify(fileTransferManager).pauseTransferForDevice("AA:BB:CC:DD:EE:FF", true);
+        verify(stateReporter).reportCommandAck("req-rm", 0, null);
+    }
+
+    @Test
+    public void testResetSoftResetsEverything() {
+        // §7.8：断开全部连接、清队列逐条 2004、状态回 REGISTERED、轮询计划重置、传输中止。
+        DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.READY);
+        List<com.longcheer.agent.model.QueuedTask> queued = new ArrayList<>();
+        queued.add(GattCommand.simple("AA:BB:CC:DD:EE:FF", "cmd-9", GattCommand.Type.READ,
+                null, null, null, GattCommand.Priority.HIGH));
+        when(controller.drainPendingCommands()).thenReturn(queued);
+        when(deviceRegistry.allControllers()).thenReturn(
+                java.util.Collections.singletonList(controller));
+
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "RESET");
+        cmd.put("requestId", "req-reset");
+
+        dispatcher.dispatch(cmd);
+
+        verify(stateReporter).reportCommandAck("req-reset", 0, null); // 立即受理
+        verify(fileTransferManager).cancelAll();
+        verify(connectionScheduler).releaseSlot("AA:BB:CC:DD:EE:FF");
+        verify(stateReporter).reportCommandAck(eq("cmd-9"), eq(2004), any());
+        verify(controller).reset();
+        verify(connectionScheduler).cancelAllRequests();
+        verify(pollingScheduler).resetAll();
+    }
+
+    @Test
     public void testFileTransferAccepted() {
         DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.REGISTERED);
         when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);

@@ -52,6 +52,7 @@ import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -122,8 +123,44 @@ public class AgentService extends Service {
     // 文件传输管理器（M4）：由装配层注入；未注入时帧仅记日志。
     private com.longcheer.agent.transfer.FileTransferManager fileTransferManager;
 
+    // 运行时统计（M5，§13）：随心跳周期上报 CONNECTION_STATISTICS。
+    private com.longcheer.agent.report.StatsCollector statsCollector;
+
     public void setFileTransferManager(com.longcheer.agent.transfer.FileTransferManager manager) {
         this.fileTransferManager = manager;
+    }
+
+    public void setStatsCollector(com.longcheer.agent.report.StatsCollector collector) {
+        this.statsCollector = collector;
+    }
+
+    /**
+     * §12.10 系统约束检查：省电白名单与蓝牙运行时权限。
+     * 缺权限进入受限模式（仅上报，不操作 BLE）；检查结果仅记录与上报，不阻断启动。
+     */
+    private void checkSystemConstraints() {
+        try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName())) {
+                AgentLog.w(TAG, "not in battery optimization whitelist");
+                stateReporter.report("ERROR",
+                        buildErrorPayload(0, "battery optimization whitelist missing", null));
+            }
+        } catch (Exception e) {
+            AgentLog.w(TAG, "battery whitelist check failed: " + e.getMessage());
+        }
+        if (Build.VERSION.SDK_INT >= 31) {
+            boolean scanGranted = checkSelfPermission("android.permission.BLUETOOTH_SCAN")
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            boolean connectGranted = checkSelfPermission("android.permission.BLUETOOTH_CONNECT")
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            if (!scanGranted || !connectGranted) {
+                // 受限模式：仅上报，不操作 BLE（§12.10）。
+                AgentLog.w(TAG, "BLE runtime permission missing, restricted mode");
+                stateReporter.report("ERROR",
+                        buildErrorPayload(0, "BLE runtime permission missing, restricted mode", null));
+            }
+        }
     }
 
     public AgentService() {
@@ -213,6 +250,7 @@ public class AgentService extends Service {
         }
 
         // 初始化 BLE 中心；实现内部负责在主线程完成 BluetoothAdapter 初始化。
+        checkSystemConstraints();
         bleCentralManager.init();
 
         // 装配 TCP 监听：REGISTER_ACK 由 Service 消费，其余命令交给 CommandDispatcher。
@@ -221,6 +259,10 @@ public class AgentService extends Service {
         // 启动调度器。
         connectionScheduler.start();
         pollingScheduler.start();
+        if (statsCollector != null) {
+            long interval = agentConfig == null ? 5000L : agentConfig.getHeartbeatIntervalMs();
+            statsCollector.start(stateReporter, interval);
+        }
 
         // 连接服务器并发送 REGISTER。
         connectAndRegister();
@@ -271,7 +313,16 @@ public class AgentService extends Service {
         payload.put("maxConnections", bleCentralManager.supportedMaxConnections());
         payload.put("agentVersion", DEFAULT_AGENT_VERSION);
         payload.put("token", token == null ? "" : token);
+        // §13：崩溃日志下次启动随注册上报（可选标记字段，服务器可忽略；文件本体经 UPLOAD_LOG 上传）。
+        payload.put("hasCrashLog", hasCrashLogs());
         return payload;
+    }
+
+    /** 是否存在未上报的崩溃日志文件（crash-*.log）。 */
+    boolean hasCrashLogs() {
+        java.io.File logDir = new java.io.File(getFilesDir(), "logs");
+        java.io.File[] crashes = logDir.listFiles((dir, name) -> name.startsWith("crash-"));
+        return crashes != null && crashes.length > 0;
     }
 
     private Map<String, Object> wrapEvent(String type, Map<String, Object> payload) {
@@ -366,12 +417,38 @@ public class AgentService extends Service {
         }
     }
 
+    /** UPLOAD_LOG（§13 / §A.2）：sinceTs + minLevel 过滤打包，LOG_FRAME 上传。 */
+    private void handleUploadLog(Map<String, Object> command) {
+        String requestId = getString(command, "requestId", null);
+        long sinceTs = getLong(command, "sinceTs", 0);
+        String minLevel = getString(command, "minLevel", "DEBUG");
+        java.io.File logDir = new java.io.File(getFilesDir(), "logs");
+        new Thread(() -> new com.longcheer.agent.log.LogUploader(logDir, tcpClient, stateReporter)
+                .upload(requestId, sinceTs, minLevel), "LogUploader").start();
+    }
+
     private void applyConfig(AgentConfig config) {
+        // §16.4 configVersion：按版本号单调应用，低版本晚到直接丢弃。
+        if (agentConfig != null && config.getConfigVersion() < agentConfig.getConfigVersion()) {
+            AgentLog.w(TAG, "drop stale config version " + config.getConfigVersion()
+                    + " (applied " + agentConfig.getConfigVersion() + ")");
+            return;
+        }
         this.agentConfig = config;
-        Log.i(TAG, "applyConfig version=" + config.getConfigVersion() + " maxSlots=" + config.getMaxSlots());
+        AgentLog.i(TAG, "applyConfig version=" + config.getConfigVersion()
+                + " maxSlots=" + config.getMaxSlots());
+
+        // 旋钮校验（§16.4/§6.4）：仅告警不阻断。
+        if (config.getConnectTimeoutMs() < config.getSetupBudgetMs()) {
+            AgentLog.w(TAG, "connectTimeoutMs(" + config.getConnectTimeoutMs()
+                    + ") < setupBudgetMs(" + config.getSetupBudgetMs() + "), 建连预算将被硬超时截断");
+        }
 
         // 调整连接槽上限。
-        connectionScheduler.setMaxSlots(config.getMaxSlots());
+        if (!connectionScheduler.setMaxSlots(config.getMaxSlots())) {
+            AgentLog.w(TAG, "applyConfig: setMaxSlots refused, keep "
+                    + connectionScheduler.requiredSlots() + " persistent+pinned");
+        }
 
         // 为 REGISTER_ACK 下发的每台 DUT 创建 Controller，初始状态 REGISTERED，不主动连接。
         List<DeviceConfig> devices = config.getDevices();
@@ -379,7 +456,7 @@ public class AgentService extends Service {
             String mac = device.getMac();
             String devId = device.getDeviceId();
             if (mac == null || mac.isEmpty() || devId == null || devId.isEmpty()) {
-                Log.w(TAG, "skip invalid device config: deviceId=" + devId + " mac=" + mac);
+                AgentLog.w(TAG, "skip invalid device config: deviceId=" + devId + " mac=" + mac);
                 continue;
             }
 
@@ -391,6 +468,12 @@ public class AgentService extends Service {
                 PollingConfig pollingConfig = toModelPollingConfig(cfg);
                 controller.setPollingConfig(pollingConfig);
                 pollingScheduler.updateConfig(mac, pollingConfig);
+                // §6.4：intervalMs 小于一轮轮询时间 → 欠账永远还不完，给出告警。
+                if (!pollingConfig.getReadCharacteristics().isEmpty()
+                        && pollingConfig.getIntervalMs() < pollingScheduler.estimateFullRoundMs()) {
+                    AgentLog.w(TAG, "intervalMs(" + pollingConfig.getIntervalMs() + ") < 一轮估算("
+                            + pollingScheduler.estimateFullRoundMs() + ")，数据将持续过期: " + mac);
+                }
             }
 
             // 装载 Decoder 字段映射 + 规则集 + profile 到轮询处理链（§16.4 / §7.3.2）；
@@ -406,6 +489,20 @@ public class AgentService extends Service {
 
             if (device.isPersistent()) {
                 connectionScheduler.setPersistent(mac, true);
+            }
+        }
+
+        // §16.4 整项替换：新配置中不存在的设备从注册表移除（销毁 Controller）。
+        Set<String> configured = new java.util.HashSet<>();
+        for (DeviceConfig device : devices) {
+            if (device.getMac() != null) {
+                configured.add(device.getMac());
+            }
+        }
+        for (String existingMac : new ArrayList<>(deviceRegistry.allMacs())) {
+            if (!configured.contains(existingMac)) {
+                AgentLog.i(TAG, "config replaced: remove device " + existingMac);
+                bleCentralManager.destroyController(existingMac);
             }
         }
 
@@ -598,6 +695,11 @@ public class AgentService extends Service {
         return value instanceof Number ? ((Number) value).intValue() : fallback;
     }
 
+    private static long getLong(Map<String, Object> map, String key, long fallback) {
+        Object value = map.get(key);
+        return value instanceof Number ? ((Number) value).longValue() : fallback;
+    }
+
     private static String getString(Map<String, Object> map, String key, String fallback) {
         Object value = map.get(key);
         return value instanceof String ? (String) value : fallback;
@@ -623,6 +725,9 @@ public class AgentService extends Service {
             String type = getString(command, "type", "");
             if ("REGISTER_ACK".equals(type)) {
                 handleRegisterAck(command);
+            } else if ("UPLOAD_LOG".equals(type)) {
+                // §13：日志打包经 LOG_FRAME 二进制帧上传（Service 持有 TcpClient，就地处理）。
+                handleUploadLog(command);
             } else {
                 commandDispatcher.dispatch(command);
             }
@@ -668,7 +773,8 @@ public class AgentService extends Service {
 
         @Override
         public void sendJson(Map<String, Object> msg) {
-            Log.d(TAG, "StubTcpClient.sendJson " + msg);
+            // §11.3 脱敏：报文可能携带 token/敏感载荷，只记类型不记内容。
+            Log.d(TAG, "StubTcpClient.sendJson type=" + (msg == null ? null : msg.get("type")));
         }
 
         @Override
@@ -812,6 +918,37 @@ public class AgentService extends Service {
         @Override
         public void setNotifyBoostUntil(long notifyBoostUntil) {
             // no-op
+        }
+
+        @Override
+        public void onAbnormalDisconnect() {
+            if (state == DeviceState.DISCONNECTED) {
+                state = DeviceState.RECONNECTING;
+            }
+        }
+
+        @Override
+        public void onReconnectBackoffExpired() {
+            if (state == DeviceState.RECONNECTING) {
+                state = DeviceState.WAITING_SLOT;
+            }
+        }
+
+        @Override
+        public void onReconnectGiveUp() {
+            if (state == DeviceState.RECONNECTING || state == DeviceState.DISCONNECTED) {
+                state = DeviceState.ERROR;
+            }
+        }
+
+        @Override
+        public List<com.longcheer.agent.model.QueuedTask> drainPendingCommands() {
+            return new ArrayList<>();
+        }
+
+        @Override
+        public void reset() {
+            state = DeviceState.REGISTERED;
         }
     }
 
@@ -972,6 +1109,16 @@ public class AgentService extends Service {
         public int requiredSlots() {
             return 0;
         }
+
+        @Override
+        public void onAbnormalDisconnect(String deviceMac) {
+            Log.d(TAG, "StubConnectionScheduler.onAbnormalDisconnect " + deviceMac);
+        }
+
+        @Override
+        public void cancelAllRequests() {
+            Log.d(TAG, "StubConnectionScheduler.cancelAllRequests");
+        }
     }
 
     private static class StubPollingScheduler implements PollingScheduler {
@@ -1001,6 +1148,11 @@ public class AgentService extends Service {
         }
 
         @Override
+        public void resetAll() {
+            Log.d(TAG, "StubPollingScheduler.resetAll");
+        }
+
+        @Override
         public void onPollCompleted(String mac, Map<UUID, byte[]> rawResults) {
             Log.d(TAG, "StubPollingScheduler.onPollCompleted " + mac);
         }
@@ -1019,7 +1171,8 @@ public class AgentService extends Service {
     private static class StubStateReporter implements StateReporter {
         @Override
         public void report(String event, Map<String, Object> payload) {
-            Log.d(TAG, "StubStateReporter.report " + event + " " + payload);
+            // §11.3 脱敏：只记事件名，不记 payload（可能含 token/敏感字段）。
+            Log.d(TAG, "StubStateReporter.report " + event);
         }
 
         @Override
@@ -1051,7 +1204,8 @@ public class AgentService extends Service {
     private static class StubCommandDispatcher implements CommandDispatcher {
         @Override
         public void dispatch(Map<String, Object> command) {
-            Log.d(TAG, "StubCommandDispatcher.dispatch " + command);
+            // §11.3 脱敏：只记命令类型，不记完整命令（可能含 WRITE_CHAR payload）。
+            Log.d(TAG, "StubCommandDispatcher.dispatch type=" + command.get("type"));
         }
     }
 

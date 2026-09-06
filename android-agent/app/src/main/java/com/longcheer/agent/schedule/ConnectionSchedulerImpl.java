@@ -59,6 +59,15 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
     private final Map<String, Long> cooldownUntil = new ConcurrentHashMap<>();
     /** 设备进入"READY 且无任务"空闲态的起始时间（空闲超时释放与 selectVictim 用）。 */
     private final Map<String, Long> idleSince = new ConcurrentHashMap<>();
+    /** 断线重连退避计数（§7.5；设备进 READY 时清零）。 */
+    private final Map<String, Integer> reconnectAttempts = new ConcurrentHashMap<>();
+    /** 运行时统计（§13，可选注入）。 */
+    private volatile com.longcheer.agent.report.StatsCollector statsCollector;
+
+    /** 注入统计收集器（装配层调用，可为 null）。 */
+    public void setStatsCollector(com.longcheer.agent.report.StatsCollector collector) {
+        this.statsCollector = collector;
+    }
 
     private ScheduledExecutorService scheduler;
     private volatile boolean running = false;
@@ -161,7 +170,9 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
         persistentDevices.put(mac, on);
         if (on) {
             // 常驻请求永不过期；已存在请求时保留原请求时间，不影响欠账老化。
-            pendingRequests.putIfAbsent(mac, ConnectionRequest.persistent(mac));
+            pendingRequests.putIfAbsent(mac, new ConnectionRequest(mac,
+                    ConnectionRequest.PRIORITY_LOW, ConnectionRequest.Reason.PERSISTENT,
+                    clock.getAsLong(), ConnectionRequest.NEVER_EXPIRE));
         } else {
             pendingRequests.remove(mac);
         }
@@ -196,6 +207,65 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
     @Override
     public void resumeScheduling() {
         suspended = false;
+    }
+
+    @Override
+    public void onAbnormalDisconnect(String deviceMac) {
+        DeviceController controller = deviceRegistry.findByMac(deviceMac);
+        if (controller == null) {
+            return;
+        }
+        long now = clock.getAsLong();
+        // §7.5 第 2 条：立即释放连接槽（设备随之 DISCONNECTED），退避期间槽位服务其他设备。
+        releaseOccupied(deviceMac, false, 0);
+        controller.onAbnormalDisconnect(); // DISCONNECTED → RECONNECTING
+
+        int attempt = reconnectAttempts.getOrDefault(deviceMac, 0) + 1;
+        reconnectAttempts.put(deviceMac, attempt);
+        if (attempt > config.getMaxReconnectAttempts()) {
+            // §7.5 第 6 条：超过最大重试次数进入 ERROR。
+            AgentLog.w(TAG, "reconnect give up after " + attempt + " attempts: " + deviceMac);
+            controller.onReconnectGiveUp();
+            return;
+        }
+        // §16.5：指数退避 1s、2s、4s……封顶 reconnectBackoffMaxMs。
+        long delay = Math.min(1000L << (attempt - 1), config.getReconnectBackoffMaxMs());
+        AgentLog.i(TAG, "schedule reconnect " + deviceMac + " attempt=" + attempt
+                + " delay=" + delay + "ms");
+        ScheduledExecutorService s = scheduler;
+        if (s != null) {
+            s.schedule(() -> onReconnectBackoffExpired(deviceMac), delay, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /**
+     * 退避到期（包可见，单测直接驱动）：经 WAITING_SLOT 按欠账任务最高优先级重新申请槽位
+     * （§7.5 第 4 条；不允许绕过调度直接连，§4.1）。
+     */
+    void onReconnectBackoffExpired(String deviceMac) {
+        DeviceController controller = deviceRegistry.findByMac(deviceMac);
+        if (controller == null) {
+            return;
+        }
+        controller.onReconnectBackoffExpired(); // → WAITING_SLOT（pendingPause 时 → PAUSED）
+        if (controller.getState() != DeviceState.WAITING_SLOT) {
+            return;
+        }
+        int priority = ConnectionRequest.PRIORITY_NORMAL;
+        for (QueuedTask task : controller.snapshot().getPendingCommands()) {
+            if (task.getPriority() == GattCommand.Priority.HIGH) {
+                priority = ConnectionRequest.PRIORITY_HIGH;
+                break;
+            }
+        }
+        long now = clock.getAsLong();
+        requestSlot(new ConnectionRequest(deviceMac, priority, ConnectionRequest.Reason.RECONNECT,
+                now, now + 30000));
+    }
+
+    @Override
+    public void cancelAllRequests() {
+        pendingRequests.clear();
     }
 
     @Override
@@ -240,7 +310,9 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
             DeviceController controller = deviceRegistry.findByMac(mac);
             if (controller == null || !GRANTABLE_STATES.contains(controller.getState())) continue;
             // putIfAbsent：不与并发的新请求竞争，避免覆盖更高优先级/更新的请求。
-            pendingRequests.putIfAbsent(mac, ConnectionRequest.persistent(mac));
+            pendingRequests.putIfAbsent(mac, new ConnectionRequest(mac,
+                    ConnectionRequest.PRIORITY_LOW, ConnectionRequest.Reason.PERSISTENT,
+                    now, ConnectionRequest.NEVER_EXPIRE));
         }
 
         // 3) 建连预算 / 时间片 / 空闲释放（pinned 与常驻设备不回收，§5.2 第 1/3/4 条）。
@@ -257,6 +329,7 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
                     evict(mac, now, true); // §12.5：超预算强释放并计一次连接失败（重连计数属 BLE 里程碑）
                 }
             } else if (state == DeviceState.READY) {
+                reconnectAttempts.remove(mac); // §7.5：重连成功清零
                 ManagedDeviceInfo info = controller.snapshot();
                 if (info.getPendingCommands().isEmpty()) {
                     idleSince.putIfAbsent(mac, now);
@@ -441,6 +514,9 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
         idleSince.remove(mac);
         AgentLog.i(TAG, "grant slot: " + mac + " reason=" + req.getReason()
                 + " waited=" + (clock.getAsLong() - req.getRequestTime()) + "ms");
+        if (statsCollector != null) {
+            statsCollector.onSlotSwitch();
+        }
         activePool.put(mac, controller);
         controller.onSlotAcquired();
     }
@@ -452,6 +528,9 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
     private void evict(String mac, long now, boolean force) {
         AgentLog.i(TAG, "evict " + mac + " (force=" + force + "), cooldown "
                 + config.getCooldownMs() + "ms");
+        if (statsCollector != null) {
+            statsCollector.onSlotSwitch();
+        }
         cooldownUntil.put(mac, now + config.getCooldownMs());
         releaseOccupied(mac, force, 0);
     }

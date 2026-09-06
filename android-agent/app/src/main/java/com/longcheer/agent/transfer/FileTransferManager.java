@@ -541,6 +541,25 @@ public class FileTransferManager {
         }
     }
 
+    /** 中止全部进行中任务（§7.8 RESET）：逐任务上报 FILE_RESULT（cancelled/2004）。 */
+    public void cancelAll() {
+        for (TransferContext ctx : tasks.values()) {
+            if (!isTerminal(ctx.task.getState())) {
+                ctx.cancelRequested = true;
+                if (activeDownloadTaskId != null
+                        && activeDownloadTaskId.equals(ctx.task.getTaskId())) {
+                    activeDownloadTaskId = null;
+                    ctx.task.setState(FileTransferTask.FileTransferState.CANCELLED);
+                    reportFileResult(ctx, 2004, "cancelled");
+                    deleteQuietly(ctx.file);
+                }
+                synchronized (ctx.monitor) {
+                    ctx.monitor.notifyAll();
+                }
+            }
+        }
+    }
+
     /** RESUME_DEVICE 交互（§7.7）：挂起的传输按断点续传恢复。 */
     public void resumeTransferForDevice(String mac) {
         for (TransferContext ctx : tasks.values()) {

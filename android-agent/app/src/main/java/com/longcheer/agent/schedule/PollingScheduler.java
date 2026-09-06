@@ -25,6 +25,12 @@ public interface PollingScheduler {
     /** 恢复轮询调度（传输完成/取消/中止后）。 */
     void resumePolling(String mac);
 
+    /**
+     * 轮询计划重置（§7.8 RESET）：全部设备 nextPollTime = now + interval，
+     * 清空欠账防重入标记。
+     */
+    void resetAll();
+
     void onPollCompleted(String mac, Map<UUID, byte[]> rawResults);
 
     /**

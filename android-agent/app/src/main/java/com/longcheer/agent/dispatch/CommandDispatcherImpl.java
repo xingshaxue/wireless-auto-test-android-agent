@@ -1,6 +1,7 @@
 package com.longcheer.agent.dispatch;
 
 import com.longcheer.agent.ble.BleCentralManager;
+import com.longcheer.agent.log.AgentLog;
 import com.longcheer.agent.model.DeviceController;
 import com.longcheer.agent.config.AgentConfig;
 import com.longcheer.agent.model.ConnectionRequest;
@@ -323,8 +324,32 @@ public class CommandDispatcherImpl implements CommandDispatcher {
     }
 
     private void handleReset(String requestId) {
-        // TODO M1: 软重置完整流程（断开全部连接、清队列、状态回 REGISTERED）。
+        // §7.8 软重置：立即回 ACK（已受理），随后执行清理。
         stateReporter.reportCommandAck(requestId, 0, null);
+
+        // 1) 中止全部文件传输任务（逐任务上报 FILE_RESULT cancelled）。
+        if (fileTransferManager != null) {
+            fileTransferManager.cancelAll();
+        }
+        // 2) 全部设备：断开（释放槽位）、丢弃队列前逐条回 CMD_ACK 2004（§12.9，不悬挂 requestId）。
+        for (DeviceController controller : deviceRegistry.allControllers()) {
+            String mac = controller.snapshot().getMac();
+            connectionScheduler.releaseSlot(mac);
+            for (com.longcheer.agent.model.QueuedTask task : controller.drainPendingCommands()) {
+                if (task instanceof GattCommand) {
+                    String cmdRequestId = ((GattCommand) task).getRequestId();
+                    if (cmdRequestId != null) {
+                        stateReporter.reportCommandAck(cmdRequestId, 2004, "command cancelled by RESET");
+                    }
+                }
+                // 轮询任务无 requestId，直接丢弃（§7.7 第 4 条）
+            }
+            controller.reset(); // 状态机回 REGISTERED、重连计数清零
+        }
+        // 3) 清空连接请求队列、轮询计划重置；注册表与 AgentConfig 保留（§7.8 第 5 条）。
+        connectionScheduler.cancelAllRequests();
+        pollingScheduler.resetAll();
+        AgentLog.i(TAG, "RESET done: all devices soft-reset");
     }
 
     private void handleSetMaxConnections(Map<String, Object> command, String requestId) {
@@ -393,6 +418,19 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         }
         connectionScheduler.cancelRequest(mac);
         connectionScheduler.releaseSlot(mac);
+        // §7.7 第 4 条：丢弃命令前逐条回 CMD_ACK 2004，保证服务器 requestId 对账不悬挂。
+        for (com.longcheer.agent.model.QueuedTask task : controller.drainPendingCommands()) {
+            if (task instanceof GattCommand) {
+                String cmdRequestId = ((GattCommand) task).getRequestId();
+                if (cmdRequestId != null) {
+                    stateReporter.reportCommandAck(cmdRequestId, 2004, "command cancelled by REMOVE_DEVICE");
+                }
+            }
+        }
+        // §7.7 第 5 条：进行中文件传输中止并上报 FILE_RESULT（cancelled）。
+        if (fileTransferManager != null) {
+            fileTransferManager.pauseTransferForDevice(mac, true);
+        }
         controller.terminate();
         bleCentralManager.destroyController(mac);
         stateReporter.reportCommandAck(requestId, 0, null);

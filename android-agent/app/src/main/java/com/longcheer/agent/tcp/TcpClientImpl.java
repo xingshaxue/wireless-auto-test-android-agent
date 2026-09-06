@@ -49,6 +49,8 @@ public class TcpClientImpl implements TcpClient {
 
     private String host;
     private int port;
+    /** 可选 TLS（§11.2）：跨网络部署时启用；握手失败不降级为明文。 */
+    private volatile boolean tlsEnabled = false;
 
     private ExecutorService connectExecutor;
     private ExecutorService readerExecutor;
@@ -80,6 +82,15 @@ public class TcpClientImpl implements TcpClient {
             try {
                 currentSocket = new Socket();
                 currentSocket.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
+                if (tlsEnabled) {
+                    // §11.2：TLS 握手失败直接走重连，不降级明文。
+                    javax.net.ssl.SSLSocket tlsSocket = (javax.net.ssl.SSLSocket)
+                            ((javax.net.ssl.SSLSocketFactory) javax.net.ssl.SSLSocketFactory.getDefault())
+                            .createSocket(currentSocket, host, port, true);
+                    tlsSocket.startHandshake();
+                    currentSocket = tlsSocket;
+                    AgentLog.i(TAG, "TLS handshake done: " + tlsSocket.getSession().getCipherSuite());
+                }
                 socket = currentSocket;
                 outputStream = currentSocket.getOutputStream();
                 connected.set(true);
@@ -213,6 +224,11 @@ public class TcpClientImpl implements TcpClient {
     @Override
     public void setListener(TcpListener listener) {
         this.listener = listener;
+    }
+
+    /** 启用/关闭 TLS（§11.2 可选；默认内网明文 + token）。 */
+    public void setTlsEnabled(boolean enabled) {
+        this.tlsEnabled = enabled;
     }
 
     public boolean isConnected() {

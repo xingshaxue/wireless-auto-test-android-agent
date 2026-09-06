@@ -57,4 +57,16 @@ public interface ConnectionScheduler {
      * @return 常驻 + pinned 设备数（5.4 拒绝调整时的 required 值）
      */
     int requiredSlots();
+
+    /**
+     * 设备异常断开（§7.5）：立即释放槽位、设备经 DISCONNECTED 进 RECONNECTING
+     * 退避（不持槽）；退避到期经 WAITING_SLOT 按欠账最高优先级重新申请槽位；
+     * 超 maxReconnectAttempts 进 ERROR。由 BLE 层/系统回调触发。
+     */
+    void onAbnormalDisconnect(String deviceMac);
+
+    /**
+     * 清空全部待处理连接请求（§7.8 RESET 软重置用；设备欠账由轮询计划重置另行处理）。
+     */
+    void cancelAllRequests();
 }
