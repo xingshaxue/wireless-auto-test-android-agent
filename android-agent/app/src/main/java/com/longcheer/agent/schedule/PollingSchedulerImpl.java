@@ -131,7 +131,7 @@ public class PollingSchedulerImpl implements PollingScheduler {
                     || state == DeviceState.DISCONNECTED
                     || state == DeviceState.WAITING_SLOT) {
                 connectionScheduler.requestSlot(
-                        ConnectionRequest.now(mac, 5, ConnectionRequest.Reason.POLL));
+                        ConnectionRequest.now(mac, ConnectionRequest.PRIORITY_NORMAL, ConnectionRequest.Reason.POLL));
             }
             // CONNECTING/SERVICE_DISCOVERING/CONFIGURING/RECONNECTING/ERROR/PAUSED/TERMINATED 不处理
         }

@@ -86,6 +86,10 @@ public class DeviceControllerImpl implements DeviceController {
     public void onSlotAcquired() {
         synchronized (lock) {
             if (info.getState() == DeviceState.WAITING_SLOT || info.getState() == DeviceState.REGISTERED) {
+                // §4.1：REGISTERED 不能直达 CONNECTING，须经 WAITING_SLOT。
+                if (info.getState() == DeviceState.REGISTERED) {
+                    transitionTo(DeviceState.WAITING_SLOT);
+                }
                 transitionTo(DeviceState.CONNECTING);
                 // TODO M1: 真实 connectGatt + 服务发现 + MTU 协商 + 通知订阅。
                 // 当前骨架：模拟建连成功进入 READY。
@@ -100,9 +104,19 @@ public class DeviceControllerImpl implements DeviceController {
     public void onSlotReleased() {
         synchronized (lock) {
             DeviceState state = info.getState();
-            if (state == DeviceState.READY || state == DeviceState.POLLING || state == DeviceState.COMMANDING) {
-                info.setDisconnectedTime(SystemClock.elapsedRealtime());
-                transitionTo(DeviceState.DISCONNECTED);
+            switch (state) {
+                case CONNECTING:
+                case SERVICE_DISCOVERING:
+                case CONFIGURING:
+                case READY:
+                case POLLING:
+                case COMMANDING:
+                    // §4.1：以上状态 → DISCONNECTED 均为合法迁移（主动断开/被踢/超预算强释放）。
+                    info.setDisconnectedTime(SystemClock.elapsedRealtime());
+                    transitionTo(DeviceState.DISCONNECTED);
+                    break;
+                default:
+                    break;
             }
         }
     }

@@ -85,7 +85,47 @@ public class ConnectionSlotManagerTest {
         // 在单元测试环境中 SystemClock.elapsedRealtime() 返回 0，
         // 因此手动将 acquireTime 设为过去的时间点以模拟超期。
         slot.setAcquireTime(-100);
-        leaky.releaseLeakedSlots();
+        assertEquals(java.util.Collections.singletonList("AA:BB:CC:DD:EE:01"), leaky.releaseLeakedSlots());
         assertTrue(slot.isFree());
+    }
+
+    @Test
+    public void testShrinkLimitBlocksNewAcquire() {
+        // §5.4 调小：占用不强制清除，但阻止新的 acquire，直到占用回落到上限内。
+        slotManager.acquire("AA:BB:CC:DD:EE:01", false);
+        slotManager.acquire("AA:BB:CC:DD:EE:02", false);
+        slotManager.acquire("AA:BB:CC:DD:EE:03", false);
+
+        slotManager.setLimit(2);
+        assertEquals(2, slotManager.slotCount());
+        assertEquals(0, slotManager.freeSlotCount());
+
+        slotManager.release("AA:BB:CC:DD:EE:03"); // 占用 3→2，仍达上限
+        assertNull(slotManager.acquire("AA:BB:CC:DD:EE:04", false));
+
+        slotManager.release("AA:BB:CC:DD:EE:02"); // 占用 2→1，可新分配
+        assertNotNull(slotManager.acquire("AA:BB:CC:DD:EE:04", false));
+    }
+
+    @Test
+    public void testGrowLimitEnablesAcquireImmediately() {
+        slotManager.setLimit(1);
+        slotManager.acquire("AA:BB:CC:DD:EE:01", false);
+        assertNull(slotManager.acquire("AA:BB:CC:DD:EE:02", false));
+
+        slotManager.setLimit(3); // §5.4 调大立即生效
+        assertNotNull(slotManager.acquire("AA:BB:CC:DD:EE:02", false));
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void testSetLimitBeyondCapacityRejected() {
+        slotManager.setLimit(4); // 容量 3
+    }
+
+    @Test
+    public void testSlotOf() {
+        slotManager.acquire("AA:BB:CC:DD:EE:01", false);
+        assertNotNull(slotManager.slotOf("AA:BB:CC:DD:EE:01"));
+        assertNull(slotManager.slotOf("AA:BB:CC:DD:EE:02"));
     }
 }

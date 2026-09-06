@@ -12,6 +12,7 @@ import com.longcheer.agent.schedule.ConnectionScheduler;
 import com.longcheer.agent.schedule.PollingScheduler;
 
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
@@ -107,7 +108,7 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         DeviceController controller = bleCentralManager.createController(mac, deviceId);
         if (!lazyConnect) {
             connectionScheduler.requestSlot(
-                    ConnectionRequest.now(mac, GattCommand.Priority.HIGH.ordinal(), ConnectionRequest.Reason.COMMAND));
+                    ConnectionRequest.now(mac, ConnectionRequest.PRIORITY_HIGH, ConnectionRequest.Reason.COMMAND));
         }
         stateReporter.reportCommandAck(requestId, 0, null);
         // TODO M1: CONNECT_DEVICE 的 ACK 语义为"设备已就绪"；当前骨架阶段简化回 0。
@@ -120,7 +121,8 @@ public class CommandDispatcherImpl implements CommandDispatcher {
             return;
         }
         connectionScheduler.cancelRequest(mac);
-        controller.onSlotReleased();
+        // 释放槽位 + 移出活动池 + 设备转 DISCONNECTED 由调度器联动完成（修复 M1 槽位泄漏）。
+        connectionScheduler.releaseSlot(mac);
         stateReporter.reportCommandAck(requestId, 0, null);
     }
 
@@ -139,6 +141,7 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         GattCommand cmd = GattCommand.simple(mac, requestId, GattCommand.Type.READ, service, characteristic,
                 null, GattCommand.Priority.HIGH);
         controller.enqueueCommand(cmd);
+        requestSlotIfNotReady(controller, mac);
         stateReporter.reportCommandAck(requestId, 0, "queued");
     }
 
@@ -159,7 +162,16 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         GattCommand cmd = GattCommand.simple(mac, requestId, GattCommand.Type.WRITE, service, characteristic,
                 payload, GattCommand.Priority.HIGH);
         controller.enqueueCommand(cmd);
+        requestSlotIfNotReady(controller, mac);
         stateReporter.reportCommandAck(requestId, 0, "queued");
+    }
+
+    /** §7.4：设备未连接时命令入队后转 WAITING_SLOT 并申请连接槽（HIGH 优先级）。 */
+    private void requestSlotIfNotReady(DeviceController controller, String mac) {
+        if (!controller.isReady()) {
+            connectionScheduler.requestSlot(
+                    ConnectionRequest.now(mac, ConnectionRequest.PRIORITY_HIGH, ConnectionRequest.Reason.COMMAND));
+        }
     }
 
     private void handleStartPolling(String requestId, String mac) {
@@ -170,7 +182,7 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         }
         // TODO M1: 标记设备启用轮询；当前骨架阶段立即触发一次连接请求。
         connectionScheduler.requestSlot(
-                ConnectionRequest.now(mac, GattCommand.Priority.NORMAL.ordinal(), ConnectionRequest.Reason.POLL));
+                ConnectionRequest.now(mac, ConnectionRequest.PRIORITY_NORMAL, ConnectionRequest.Reason.POLL));
         stateReporter.reportCommandAck(requestId, 0, null);
     }
 
@@ -226,7 +238,15 @@ public class CommandDispatcherImpl implements CommandDispatcher {
             stateReporter.reportCommandAck(requestId, 3003, "maxSlots must be in [2,5]");
             return;
         }
-        connectionScheduler.setMaxSlots(max);
+        // §5.4：驱逐失败（新上限低于常驻 + pinned 数）拒绝调整，回 3003 并携带 required/max。
+        boolean accepted = connectionScheduler.setMaxSlots(max);
+        if (!accepted) {
+            Map<String, Object> result = new HashMap<>();
+            result.put("required", connectionScheduler.requiredSlots());
+            result.put("max", max);
+            stateReporter.reportCommandAck(requestId, 3003, result);
+            return;
+        }
         stateReporter.reportCommandAck(requestId, 0, null);
     }
 
@@ -268,6 +288,7 @@ public class CommandDispatcherImpl implements CommandDispatcher {
             return;
         }
         connectionScheduler.cancelRequest(mac);
+        connectionScheduler.releaseSlot(mac);
         controller.terminate();
         bleCentralManager.destroyController(mac);
         stateReporter.reportCommandAck(requestId, 0, null);

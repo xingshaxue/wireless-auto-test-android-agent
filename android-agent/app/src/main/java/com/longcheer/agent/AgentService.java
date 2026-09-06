@@ -478,21 +478,10 @@ public class AgentService extends Service {
             @Override
             public void onBluetoothDisabled() {
                 Log.w(TAG, "Bluetooth disabled, release slots and pause scheduler");
-                // SDD §12.10：蓝牙关闭时释放所有槽位，连接态设备置 DISCONNECTED。
+                // SDD §12.10：蓝牙关闭 → 暂停授槽、释放全部槽位，连接态设备由
+                // onSlotReleased 置 DISCONNECTED（保留欠账）；REGISTERED/WAITING_SLOT 不受影响。
                 if (connectionScheduler != null) {
-                    connectionScheduler.setMaxSlots(0);
-                }
-                for (DeviceController controller : deviceRegistry.allControllers()) {
-                    DeviceState state = controller.getState();
-                    if (state == DeviceState.CONNECTING
-                            || state == DeviceState.SERVICE_DISCOVERING
-                            || state == DeviceState.CONFIGURING
-                            || state == DeviceState.READY
-                            || state == DeviceState.POLLING
-                            || state == DeviceState.COMMANDING
-                            || state == DeviceState.RECONNECTING) {
-                        controller.onSlotReleased();
-                    }
+                    connectionScheduler.suspendScheduling();
                 }
                 stateReporter.report("ERROR", buildErrorPayload(1001, "bluetooth disabled", null));
             }
@@ -500,8 +489,9 @@ public class AgentService extends Service {
             @Override
             public void onBluetoothEnabled() {
                 Log.i(TAG, "Bluetooth enabled, resume scheduler");
-                if (agentConfig != null && connectionScheduler != null) {
-                    connectionScheduler.setMaxSlots(agentConfig.getMaxSlots());
+                // 恢复授槽，欠账请求按优先级重新竞争槽位（§12.10）。
+                if (connectionScheduler != null) {
+                    connectionScheduler.resumeScheduling();
                 }
             }
         });
@@ -829,6 +819,26 @@ public class AgentService extends Service {
         public void forceRelease(String deviceMac) {
             // no-op
         }
+
+        @Override
+        public void setLimit(int maxSlots) {
+            // no-op
+        }
+
+        @Override
+        public com.longcheer.agent.model.ConnectionSlot slotOf(String deviceMac) {
+            return null;
+        }
+
+        @Override
+        public List<String> releaseLeakedSlots() {
+            return new ArrayList<>();
+        }
+
+        @Override
+        public List<com.longcheer.agent.model.ConnectionSlot> occupiedSlots() {
+            return new ArrayList<>();
+        }
     }
 
     private static class StubConnectionScheduler implements ConnectionScheduler {
@@ -853,8 +863,9 @@ public class AgentService extends Service {
         }
 
         @Override
-        public void setMaxSlots(int max) {
+        public boolean setMaxSlots(int max) {
             Log.d(TAG, "StubConnectionScheduler.setMaxSlots " + max);
+            return true;
         }
 
         @Override
@@ -870,6 +881,26 @@ public class AgentService extends Service {
         @Override
         public void unpin(String mac) {
             Log.d(TAG, "StubConnectionScheduler.unpin " + mac);
+        }
+
+        @Override
+        public void releaseSlot(String deviceMac) {
+            Log.d(TAG, "StubConnectionScheduler.releaseSlot " + deviceMac);
+        }
+
+        @Override
+        public void suspendScheduling() {
+            Log.d(TAG, "StubConnectionScheduler.suspendScheduling");
+        }
+
+        @Override
+        public void resumeScheduling() {
+            Log.d(TAG, "StubConnectionScheduler.resumeScheduling");
+        }
+
+        @Override
+        public int requiredSlots() {
+            return 0;
         }
     }
 

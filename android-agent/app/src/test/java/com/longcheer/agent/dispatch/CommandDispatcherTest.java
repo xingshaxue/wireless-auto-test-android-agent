@@ -132,6 +132,8 @@ public class CommandDispatcherTest {
 
     @Test
     public void testSetMaxConnectionsValid() {
+        when(connectionScheduler.setMaxSlots(4)).thenReturn(true);
+
         Map<String, Object> cmd = new HashMap<>();
         cmd.put("type", "SET_MAX_CONNECTIONS");
         cmd.put("requestId", "req-5");
@@ -141,6 +143,27 @@ public class CommandDispatcherTest {
 
         verify(connectionScheduler).setMaxSlots(4);
         verify(stateReporter).reportCommandAck("req-5", 0, null);
+    }
+
+    @Test
+    public void testSetMaxConnectionsEvictionRefusedReturns3003() {
+        // §5.4：新上限低于常驻 + pinned 数 → 拒绝调整，回 3003 且报文体带 required/max。
+        when(connectionScheduler.setMaxSlots(2)).thenReturn(false);
+        when(connectionScheduler.requiredSlots()).thenReturn(3);
+
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "SET_MAX_CONNECTIONS");
+        cmd.put("requestId", "req-5b");
+        cmd.put("maxSlots", 2);
+
+        dispatcher.dispatch(cmd);
+
+        ArgumentCaptor<Object> captor = ArgumentCaptor.forClass(Object.class);
+        verify(stateReporter).reportCommandAck(eq("req-5b"), eq(3003), captor.capture());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> result = (Map<String, Object>) captor.getValue();
+        assertEquals(3, result.get("required"));
+        assertEquals(2, result.get("max"));
     }
 
     @Test
@@ -180,9 +203,65 @@ public class CommandDispatcherTest {
         dispatcher.dispatch(cmd);
 
         verify(connectionScheduler).cancelRequest("AA:BB:CC:DD:EE:FF");
+        verify(connectionScheduler).releaseSlot("AA:BB:CC:DD:EE:FF");
         verify(controller).terminate();
         verify(bleCentralManager).destroyController("AA:BB:CC:DD:EE:FF");
         verify(stateReporter, times(1)).reportCommandAck("req-8", 0, null);
+    }
+
+    @Test
+    public void testDisconnectDeviceReleasesSlot() {
+        DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.READY);
+        when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);
+
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "DISCONNECT_DEVICE");
+        cmd.put("requestId", "req-9");
+        cmd.put("deviceMac", "AA:BB:CC:DD:EE:FF");
+
+        dispatcher.dispatch(cmd);
+
+        // 修复 M1 槽位泄漏：断开必须经调度器归还槽位并移出活动池。
+        verify(connectionScheduler).cancelRequest("AA:BB:CC:DD:EE:FF");
+        verify(connectionScheduler).releaseSlot("AA:BB:CC:DD:EE:FF");
+        verify(controller, never()).onSlotReleased();
+        verify(stateReporter).reportCommandAck("req-9", 0, null);
+    }
+
+    @Test
+    public void testReadCharToOfflineDeviceRequestsSlot() {
+        // §7.4：设备未连接时命令入队并申请连接槽（HIGH）。
+        DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.REGISTERED);
+        when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);
+
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "READ_CHAR");
+        cmd.put("requestId", "req-10");
+        cmd.put("deviceMac", "AA:BB:CC:DD:EE:FF");
+        cmd.put("char", "2A19");
+
+        dispatcher.dispatch(cmd);
+
+        verify(controller).enqueueCommand(any());
+        verify(connectionScheduler).requestSlot(any());
+        verify(stateReporter).reportCommandAck("req-10", 0, "queued");
+    }
+
+    @Test
+    public void testReadCharToReadyDeviceDoesNotRequestSlot() {
+        DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.READY);
+        when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);
+
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "READ_CHAR");
+        cmd.put("requestId", "req-11");
+        cmd.put("deviceMac", "AA:BB:CC:DD:EE:FF");
+        cmd.put("char", "2A19");
+
+        dispatcher.dispatch(cmd);
+
+        verify(controller).enqueueCommand(any());
+        verify(connectionScheduler, never()).requestSlot(any());
     }
 
     private DeviceController mockController(String mac, DeviceState state) {
@@ -192,6 +271,7 @@ public class CommandDispatcherTest {
         info.setPollingConfig(PollingConfig.defaults());
         when(controller.snapshot()).thenReturn(info);
         when(controller.getState()).thenReturn(state);
+        when(controller.isReady()).thenReturn(state == DeviceState.READY);
         return controller;
     }
 }

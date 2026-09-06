@@ -8,13 +8,16 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * ConnectionSlotManager 基础实现。
- * M1 阶段：维护固定数量槽位，支持 acquire/release/forceRelease 与泄漏防护检查。
+ * ConnectionSlotManager 实现（SDD §3.4 / §12.5）。
+ *
+ * <p>槽位数组容量在构造时固定；{@link #setLimit(int)} 在容量范围内动态调整可用上限，
+ * 支持 SET_MAX_CONNECTIONS 的调大立即生效与调小驱逐回落（§5.4）。</p>
  */
 public class ConnectionSlotManagerImpl implements ConnectionSlotManager {
 
     private final List<ConnectionSlot> slots;
     private final long maxHoldTimeMs;
+    private int limit;
 
     public ConnectionSlotManagerImpl(int slotCount) {
         this(slotCount, Long.MAX_VALUE);
@@ -28,26 +31,54 @@ public class ConnectionSlotManagerImpl implements ConnectionSlotManager {
         for (int i = 0; i < slotCount; i++) {
             this.slots.add(new ConnectionSlot(i));
         }
+        this.limit = slotCount;
         this.maxHoldTimeMs = maxHoldTimeMs;
     }
 
     @Override
     public int slotCount() {
+        return limit;
+    }
+
+    /**
+     * @return 槽位数组容量（可调整上限的最大值）
+     */
+    public int capacity() {
         return slots.size();
+    }
+
+    @Override
+    public void setLimit(int maxSlots) {
+        synchronized (slots) {
+            if (maxSlots < 0 || maxSlots > slots.size()) {
+                throw new IllegalArgumentException(
+                        "maxSlots must be in [0," + slots.size() + "], got " + maxSlots);
+            }
+            this.limit = maxSlots;
+        }
     }
 
     @Override
     public ConnectionSlot acquire(String deviceMac, boolean pinned) {
         synchronized (slots) {
+            int occupied = 0;
+            ConnectionSlot firstFree = null;
             for (ConnectionSlot slot : slots) {
                 if (slot.isFree()) {
-                    slot.setCurrentDeviceMac(deviceMac);
-                    slot.setAcquireTime(SystemClock.elapsedRealtime());
-                    slot.setPinned(pinned);
-                    return slot;
+                    if (firstFree == null) {
+                        firstFree = slot;
+                    }
+                } else {
+                    occupied++;
                 }
             }
-            return null;
+            if (firstFree == null || occupied >= limit) {
+                return null;
+            }
+            firstFree.setCurrentDeviceMac(deviceMac);
+            firstFree.setAcquireTime(SystemClock.elapsedRealtime());
+            firstFree.setPinned(pinned);
+            return firstFree;
         }
     }
 
@@ -70,32 +101,42 @@ public class ConnectionSlotManagerImpl implements ConnectionSlotManager {
     }
 
     /**
-     * 检查并释放超期占用的槽位（泄漏防护）。
+     * 检查并释放超期占用的槽位（泄漏防护，§12.5）。
+     *
+     * @return 被强制释放的设备 MAC 列表，供调度器清理连接池与设备上下文
      */
-    public void releaseLeakedSlots() {
+    public List<String> releaseLeakedSlots() {
+        List<String> released = new ArrayList<>();
         if (maxHoldTimeMs == Long.MAX_VALUE) {
-            return;
+            return released;
         }
         long now = SystemClock.elapsedRealtime();
         synchronized (slots) {
             for (ConnectionSlot slot : slots) {
                 if (!slot.isFree() && now - slot.getAcquireTime() > maxHoldTimeMs) {
+                    released.add(slot.getCurrentDeviceMac());
                     slot.clear();
                 }
             }
         }
+        return released;
     }
 
     /**
-     * @return 当前空闲槽位数
+     * @return 当前空闲槽位数（不超过剩余可用额度）
      */
     public int freeSlotCount() {
         synchronized (slots) {
-            int count = 0;
+            int free = 0;
+            int occupied = 0;
             for (ConnectionSlot slot : slots) {
-                if (slot.isFree()) count++;
+                if (slot.isFree()) {
+                    free++;
+                } else {
+                    occupied++;
+                }
             }
-            return count;
+            return Math.min(free, Math.max(0, limit - occupied));
         }
     }
 
@@ -109,6 +150,20 @@ public class ConnectionSlotManagerImpl implements ConnectionSlotManager {
                 if (!slot.isFree()) list.add(slot);
             }
             return list;
+        }
+    }
+
+    /**
+     * @return 指定设备当前占用的槽位；未占用返回 null
+     */
+    public ConnectionSlot slotOf(String deviceMac) {
+        synchronized (slots) {
+            for (ConnectionSlot slot : slots) {
+                if (deviceMac.equals(slot.getCurrentDeviceMac())) {
+                    return slot;
+                }
+            }
+            return null;
         }
     }
 }
