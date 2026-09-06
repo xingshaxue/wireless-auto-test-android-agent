@@ -408,15 +408,68 @@ def selftest():
     print("[selftest] ALL PASS", flush=True)
 
 
+# ---------------- 冒烟模式（emulator_smoke.sh 调用） ----------------
+
+def smoke(server: MockServer):
+    """脚本化冒烟场景：CONNECT → READY → POLL_RESULT → 规则触发 → 文件传输。"""
+    def expect(desc, pred, timeout_s):
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            for m in server.events_log:
+                if pred(m):
+                    print(f"[smoke] PASS: {desc}", flush=True)
+                    return True
+            time.sleep(0.2)
+        print(f"[smoke] FAIL timeout: {desc}", flush=True)
+        return False
+
+    ok = True
+    ok &= expect("REGISTER 收到", lambda m: m.get("type") == "REGISTER", 30)
+    if not ok:
+        print("[smoke] FAIL: no REGISTER, abort", flush=True)
+        print("SMOKE FAIL", flush=True)
+        return 1
+
+    # 加快轮询节奏（示例配置 60s 太慢），再连接虚拟 DUT。
+    server.send_command("SET_POLLING_INTERVAL", deviceMac=server.dut_mac, intervalMs=5000)
+    server.send_command("CONNECT_DEVICE", deviceMac=server.dut_mac)
+    ok &= expect("DEVICE_STATE READY", lambda m: m.get("type") == "DEVICE_STATE"
+                 and m.get("state") == "READY", 60)
+    ok &= expect("POLL_RESULT battery=85", lambda m: m.get("type") == "POLL_RESULT"
+                 and (m.get("values") or {}).get("battery") == 85, 120)
+    ok &= expect("TEMP_CRITICAL 规则触发", lambda m: m.get("type") == "TEMP_CRITICAL", 60)
+
+    # 文件传输闭环（10KB，虚拟 TransferAdapter 窗口恒 ACK）。
+    fd, fpath = tempfile.mkstemp(suffix=".bin")
+    os.write(fd, bytes(range(256)) * 40)
+    os.close(fd)
+    server.start_file_transfer(server.dut_mac, fpath)
+    ok &= expect("FILE_RESULT errorCode=0", lambda m: m.get("type") == "FILE_RESULT"
+                 and m.get("errorCode") == 0, 120)
+    os.unlink(fpath)
+
+    print("SMOKE PASS" if ok else "SMOKE FAIL", flush=True)
+    return 0 if ok else 1
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="mock server for wireless-auto-test agent")
     parser.add_argument("--port", type=int, default=10086)
     parser.add_argument("--dut-mac", default="AA:BB:CC:DD:EE:FF")
     parser.add_argument("--selftest", action="store_true")
+    parser.add_argument("--smoke", action="store_true",
+                        help="脚本化冒烟场景（配合模拟器），按结果退出 0/1")
     args = parser.parse_args()
 
     if args.selftest:
         selftest()
+    elif args.smoke:
+        srv = MockServer(port=args.port, dut_mac=args.dut_mac)
+        th = threading.Thread(target=srv.serve_forever, daemon=True)
+        th.start()
+        code = smoke(srv)
+        srv.running = False
+        sys.exit(code)
     else:
         srv = MockServer(port=args.port, dut_mac=args.dut_mac)
         th = threading.Thread(target=srv.serve_forever, daemon=True)

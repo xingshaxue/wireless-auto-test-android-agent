@@ -111,11 +111,15 @@ public class AgentService extends Service {
     private CommandDispatcher commandDispatcher;
     private PollResultChain pollResultChain;
 
+    /** 虚拟 DUT 开关（模拟器/CI 测试，默认 false）。 */
+    public static final String EXTRA_SIMULATE_DUT = "simulateDut";
+
     // 启动参数
     private String serverHost = "127.0.0.1";
     private int serverPort = 10086;
     private String token = "";
     private String deviceId = "";
+    private boolean simulateDut = false;
 
     // 运行期配置
     private AgentConfig agentConfig;
@@ -273,7 +277,7 @@ public class AgentService extends Service {
         // 生产装配：当前仍是 Stub 时尝试装配真实组件；BLE 不可用/装配失败回退 Stub 并上报。
         if (tcpClient instanceof StubTcpClient) {
             try {
-                AgentAssembler.Components components = AgentAssembler.assemble(this);
+                AgentAssembler.Components components = AgentAssembler.assemble(this, simulateDut);
                 if (components != null) {
                     this.tcpClient = components.tcpClient;
                     this.bleCentralManager = components.bleCentralManager;
@@ -339,6 +343,9 @@ public class AgentService extends Service {
         }
         if (intent.hasExtra(EXTRA_DEVICE_ID)) {
             deviceId = intent.getStringExtra(EXTRA_DEVICE_ID);
+        }
+        if (intent.hasExtra(EXTRA_SIMULATE_DUT)) {
+            simulateDut = intent.getBooleanExtra(EXTRA_SIMULATE_DUT, false);
         }
     }
 

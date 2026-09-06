@@ -29,6 +29,8 @@ public class BleCentralManagerImpl implements BleCentralManager, DeviceControlle
     private final BluetoothAdapter bluetoothAdapter;
     private final DeviceRegistry deviceRegistry;
     private volatile DeviceControllerDeps depsTemplate; // null = 模拟模式
+    /** 虚拟 DUT 客户端工厂（simulateDut 模式注入；null = 真实 AndroidGattClient）。 */
+    private volatile DeviceControllerDeps.GattClientFactory clientFactoryDelegate;
     private final Map<String, DeviceController> controllers = new ConcurrentHashMap<>();
     private final Map<String, GattClient> activeClients = new ConcurrentHashMap<>();
     /** BLE 回调派发线程（§9：回调不落在 Binder 线程）。 */
@@ -58,6 +60,10 @@ public class BleCentralManagerImpl implements BleCentralManager, DeviceControlle
 
     @Override
     public boolean isBleAvailable() {
+        // 虚拟 DUT 模式：无蓝牙硬件（模拟器）也视为可用。
+        if (clientFactoryDelegate != null) {
+            return initialized;
+        }
         return initialized && bluetoothAdapter != null && bluetoothAdapter.isEnabled();
     }
 
@@ -106,10 +112,20 @@ public class BleCentralManagerImpl implements BleCentralManager, DeviceControlle
         this.depsTemplate = deps;
     }
 
+    /** 装配层注入虚拟 DUT 客户端工厂（simulateDut 模式）。 */
+    public void setClientFactoryDelegate(DeviceControllerDeps.GattClientFactory delegate) {
+        this.clientFactoryDelegate = delegate;
+    }
+
     // ==================== GattClientFactory / GattClientProvider ====================
 
     @Override
     public GattClient create(String mac, GattClient.Callback callback) {
+        if (clientFactoryDelegate != null) {
+            GattClient client = clientFactoryDelegate.create(mac, callback);
+            activeClients.put(mac, client);
+            return client;
+        }
         BluetoothDevice device = bluetoothAdapter.getRemoteDevice(mac);
         GattClient client = new AndroidGattClient(context, device, callback, callbackExecutor);
         activeClients.put(mac, client);

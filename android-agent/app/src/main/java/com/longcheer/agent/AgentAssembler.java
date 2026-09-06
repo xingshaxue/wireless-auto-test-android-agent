@@ -74,10 +74,18 @@ public final class AgentAssembler {
      *
      * @return 组件集；BLE 不可用（无蓝牙硬件）返回 null
      */
-    public static Components assemble(Context context) {
+    /**
+     * 装配真实组件。
+     *
+     * @param simulateDut 虚拟 DUT 模式（模拟器/CI）：无蓝牙硬件也装配真实组件图，
+     *                    GATT 客户端委托 {@link SimulatedGattClient}，
+     *                    传输适配器用 {@link SimulatedTransferAdapter}
+     * @return 组件集；BLE 不可用（无蓝牙硬件且未开虚拟 DUT）返回 null
+     */
+    public static Components assemble(Context context, boolean simulateDut) {
         BluetoothManager bm = (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
         BluetoothAdapter adapter = bm == null ? null : bm.getAdapter();
-        if (adapter == null) {
+        if (adapter == null && !simulateDut) {
             AgentLog.e(TAG, "no BluetoothAdapter, assembly aborted");
             return null;
         }
@@ -107,6 +115,30 @@ public final class AgentAssembler {
         actionExecutor.setPollingScheduler(pollingScheduler); // 补注，破环
 
         c.bleCentralManager = new BleCentralManagerImpl(context, adapter, c.deviceRegistry, null);
+        if (simulateDut) {
+            // 虚拟 DUT：GattClient 工厂委托模拟实现（无 BluetoothAdapter 依赖）。
+            java.util.concurrent.Executor callbackExecutor = java.util.concurrent.Executors
+                    .newCachedThreadPool(r -> {
+                        Thread t = new Thread(r, "SimDutCallback");
+                        t.setDaemon(true);
+                        return t;
+                    });
+            c.bleCentralManager.setClientFactoryDelegate(
+                    new com.longcheer.agent.ble.DeviceControllerDeps.GattClientFactory() {
+                        @Override
+                        public com.longcheer.agent.ble.GattClient create(
+                                String mac, com.longcheer.agent.ble.GattClient.Callback cb) {
+                            return new com.longcheer.agent.ble.SimulatedGattClient(mac, cb,
+                                    callbackExecutor);
+                        }
+
+                        @Override
+                        public void removeClient(String mac) {
+                            // 虚拟 DUT 无资源可清
+                        }
+                    });
+            AgentLog.i(TAG, "simulateDut mode: virtual DUT active");
+        }
         GattTransportImpl transport = new GattTransportImpl(c.bleCentralManager, responseBus,
                 chain::resolveService);
         GattExecutorImpl gattExecutor = new GattExecutorImpl(transport, pollingScheduler);
@@ -123,17 +155,28 @@ public final class AgentAssembler {
         ((ConnectionSchedulerImpl) c.connectionScheduler).setStatsCollector(c.statsCollector);
         pollingScheduler.setStatsCollector(c.statsCollector);
 
-        // DUT 传输协议适配器：真机协议（标准 OTA 或自定义）确定后实现并注入（§7.6）。
         File transferDir = new File(context.getFilesDir(), "transfer");
-        c.fileTransferManager = new FileTransferManager(c.deviceRegistry, c.connectionScheduler,
-                pollingScheduler, c.stateReporter, config, transferDir,
-                (task, device) -> new UnsupportedTransferAdapter());
+        if (simulateDut) {
+            c.fileTransferManager = new FileTransferManager(c.deviceRegistry, c.connectionScheduler,
+                    pollingScheduler, c.stateReporter, config, transferDir,
+                    (task, device) -> new com.longcheer.agent.transfer.SimulatedTransferAdapter());
+        } else {
+            // DUT 传输协议适配器：真机协议（标准 OTA 或自定义）确定后实现并注入（§7.6）。
+            c.fileTransferManager = new FileTransferManager(c.deviceRegistry, c.connectionScheduler,
+                    pollingScheduler, c.stateReporter, config, transferDir,
+                    (task, device) -> new UnsupportedTransferAdapter());
+        }
 
         c.commandDispatcher = new CommandDispatcherImpl(c.bleCentralManager, c.deviceRegistry,
                 c.connectionScheduler, c.pollingScheduler, c.stateReporter, config, chain,
                 c.fileTransferManager);
-        AgentLog.i(TAG, "real components assembled");
+        AgentLog.i(TAG, "real components assembled" + (simulateDut ? " (simulateDut)" : ""));
         return c;
+    }
+
+    /** 真实模式装配（模拟器开关关闭）。 */
+    public static Components assemble(Context context) {
+        return assemble(context, false);
     }
 
     /** 默认 TransferAdapter：未配置 DUT 协议时明确失败（不静默），任务报 4003。 */
