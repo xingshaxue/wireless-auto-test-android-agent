@@ -13,27 +13,58 @@ import com.longcheer.agent.model.PollingConfig;
 import com.longcheer.agent.model.PollingTask;
 import com.longcheer.agent.model.QueuedTask;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 /**
- * DeviceController 基础实现。
- * M1 阶段：维护 ManagedDeviceInfo、状态机与命令队列；真实 BLE 连接与 GATT 操作留 TODO。
+ * DeviceController 实现（SDD §3.7 / §7.2 / §12.1）。
+ *
+ * <p>两种模式：2 参构造为模拟模式（M1 骨架，单测用）；注入 {@link DeviceControllerDeps}
+ * 后走真实 BLE 建连流程——CONNECTING（connectGatt + 看门狗）→ SERVICE_DISCOVERING →
+ * CONFIGURING（MTU 阶梯 + 通知订阅）→ READY。回调只抛事件，所有迁移经状态机校验（§4.1）。</p>
  */
 public class DeviceControllerImpl implements DeviceController {
 
     private static final String TAG = "DeviceController";
 
+    /** MTU 协商阶梯（§3.2）：逐级失败后保持当前值（默认 23）。 */
+    static final int[] MTU_LADDER = {512, 247, 185};
+    /** 服务发现失败重试上限（§12.1：137 重试 3 次）。 */
+    static final int SERVICE_DISCOVERY_MAX_RETRY = 3;
+
     private final ManagedDeviceInfo info;
+    private final DeviceControllerDeps deps; // null = 模拟模式
     private DeviceStateMachine stateMachine = new DeviceStateMachine();
     private final Object lock = new Object();
     private volatile boolean pendingPause = false;
     private volatile boolean abortTransferOnPause = false;
     private List<PollRule> pollRules = Collections.emptyList();
 
+    // ---- 真实连接会话状态（仅 deps != null 时使用） ----
+    private GattClient client;
+    private volatile boolean intentionalDisconnect = false;
+    private String pendingConnectRequestId;
+    private int mtuLadderIndex = 0;
+    private int negotiatedMtu = 23;
+    private List<UUID> pendingNotifyChars = Collections.emptyList();
+    private int notifySubscribeIndex = 0;
+    private int serviceDiscoveryRetries = 0;
+    private int lastGattStatus = 0;
+
     public DeviceControllerImpl(String deviceId, String mac) {
-        this.info = new ManagedDeviceInfo(deviceId, mac);
+        this(deviceId, mac, null);
     }
+
+    public DeviceControllerImpl(String deviceId, String mac, DeviceControllerDeps deps) {
+        this.info = new ManagedDeviceInfo(deviceId, mac);
+        this.deps = deps;
+    }
+
+    // ==================== 生命周期 ====================
 
     @Override
     public void pause(boolean abortTransfer) {
@@ -84,6 +115,7 @@ public class DeviceControllerImpl implements DeviceController {
     public void terminate() {
         synchronized (lock) {
             info.getPendingCommands().clear();
+            closeClient();
             transitionTo(DeviceState.TERMINATED);
         }
     }
@@ -91,19 +123,24 @@ public class DeviceControllerImpl implements DeviceController {
     @Override
     public void onSlotAcquired() {
         synchronized (lock) {
-            if (info.getState() == DeviceState.WAITING_SLOT || info.getState() == DeviceState.REGISTERED) {
+            if (info.getState() != DeviceState.WAITING_SLOT
+                    && info.getState() != DeviceState.REGISTERED) {
+                return;
+            }
+            if (info.getState() == DeviceState.REGISTERED) {
                 // §4.1：REGISTERED 不能直达 CONNECTING，须经 WAITING_SLOT。
-                if (info.getState() == DeviceState.REGISTERED) {
-                    transitionTo(DeviceState.WAITING_SLOT);
-                }
-                transitionTo(DeviceState.CONNECTING);
-                // TODO M1: 真实 connectGatt + 服务发现 + MTU 协商 + 通知订阅。
-                // 当前骨架：模拟建连成功进入 READY。
+                transitionTo(DeviceState.WAITING_SLOT);
+            }
+            transitionTo(DeviceState.CONNECTING);
+            if (deps == null) {
+                // 模拟模式（M1 骨架，单测用）：直接迁移到 READY。
                 transitionTo(DeviceState.SERVICE_DISCOVERING);
                 transitionTo(DeviceState.CONFIGURING);
                 transitionTo(DeviceState.READY);
+                return;
             }
         }
+        startRealConnect();
     }
 
     @Override
@@ -118,7 +155,8 @@ public class DeviceControllerImpl implements DeviceController {
                 case POLLING:
                 case COMMANDING:
                     // §4.1：以上状态 → DISCONNECTED 均为合法迁移（主动断开/被踢/超预算强释放）。
-                    info.setDisconnectedTime(SystemClock.elapsedRealtime());
+                    info.setDisconnectedTime(nowMs());
+                    closeClient();
                     transitionTo(DeviceState.DISCONNECTED);
                     break;
                 default:
@@ -126,6 +164,250 @@ public class DeviceControllerImpl implements DeviceController {
             }
         }
     }
+
+    // ==================== 真实建连流程（§7.2 / §12.1） ====================
+
+    private void startRealConnect() {
+        intentionalDisconnect = false;
+        mtuLadderIndex = 0;
+        negotiatedMtu = 23;
+        serviceDiscoveryRetries = 0;
+        AgentLog.i(TAG, "connecting " + info.getMac());
+        client = deps.clientFactory.create(info.getMac(), gattCallback);
+        client.connect();
+        deps.watchdogExecutor.schedule(this::onConnectWatchdog,
+                deps.config.getConnectTimeoutMs(), java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    /** 建连硬超时看门狗（§7.2 connectTimeoutMs，包可见供单测）。 */
+    void onConnectWatchdog() {
+        synchronized (lock) {
+            DeviceState state = info.getState();
+            if (state != DeviceState.CONNECTING && state != DeviceState.SERVICE_DISCOVERING
+                    && state != DeviceState.CONFIGURING) {
+                return; // 已 READY 或已离开建连流程
+            }
+        }
+        AgentLog.w(TAG, "connect watchdog timeout: " + info.getMac());
+        handleAbnormalDisconnect(-1);
+    }
+
+    private final GattClient.Callback gattCallback = new GattClient.Callback() {
+        @Override
+        public void onConnected() {
+            synchronized (lock) {
+                if (info.getState() != DeviceState.CONNECTING) {
+                    return;
+                }
+                transitionTo(DeviceState.SERVICE_DISCOVERING);
+            }
+            client.discoverServices();
+        }
+
+        @Override
+        public void onDisconnected(int status) {
+            synchronized (lock) {
+                if (intentionalDisconnect) {
+                    return;
+                }
+            }
+            // §12.1：onConnectionStateChange 的 133 = 连接失败/断开，走 §7.5 重连。
+            handleAbnormalDisconnect(status);
+        }
+
+        @Override
+        public void onServicesDiscovered(int status) {
+            synchronized (lock) {
+                if (info.getState() != DeviceState.SERVICE_DISCOVERING) {
+                    return;
+                }
+                if (status != 0) {
+                    serviceDiscoveryRetries++;
+                    if (serviceDiscoveryRetries >= SERVICE_DISCOVERY_MAX_RETRY) {
+                        AgentLog.w(TAG, "service discovery failed after retries: " + info.getMac());
+                        handleAbnormalDisconnectLocked(status);
+                        return;
+                    }
+                    AgentLog.w(TAG, "service discovery retry " + serviceDiscoveryRetries
+                            + ": " + info.getMac());
+                    client.discoverServices();
+                    return;
+                }
+                transitionTo(DeviceState.CONFIGURING);
+            }
+            requestNextMtu();
+        }
+
+        @Override
+        public void onMtuChanged(int mtu, int status) {
+            boolean readyToFinish = false;
+            synchronized (lock) {
+                if (info.getState() != DeviceState.CONFIGURING) {
+                    return;
+                }
+                if (status == 0) {
+                    negotiatedMtu = mtu; // 记录实际协商值（§3.2）
+                    AgentLog.i(TAG, info.getMac() + " MTU=" + mtu);
+                    readyToFinish = startNotifySubscribeLocked();
+                } else {
+                    mtuLadderIndex++;
+                }
+            }
+            if (readyToFinish) {
+                onReady();
+            } else if (status != 0) {
+                requestNextMtu(); // 阶梯降级（512→247→185→默认 23）
+            }
+        }
+
+        @Override
+        public void onRead(UUID charUuid, byte[] value, int status) {
+            deps.responseBus.onRead(info.getMac(), charUuid, value, status);
+        }
+
+        @Override
+        public void onWrite(UUID charUuid, int status) {
+            deps.responseBus.onWrite(info.getMac(), charUuid, status);
+        }
+
+        @Override
+        public void onNotify(UUID charUuid, byte[] value) {
+            // §7.3.3：通知进处理链（保槽与节流在链内）。
+            deps.pollResultChain.onNotification(info.getMac(), charUuid, value);
+        }
+
+        @Override
+        public void onNotifySubscribed(UUID charUuid, int status) {
+            boolean readyToFinish = false;
+            synchronized (lock) {
+                if (info.getState() != DeviceState.CONFIGURING) {
+                    return;
+                }
+                if (status != 0) {
+                    AgentLog.w(TAG, "notify subscribe failed: " + charUuid + " status=" + status);
+                }
+                notifySubscribeIndex++;
+                if (notifySubscribeIndex < pendingNotifyChars.size()) {
+                    UUID next = pendingNotifyChars.get(notifySubscribeIndex);
+                    UUID serviceUuid = deps.pollResultChain.resolveService(info.getMac(), next);
+                    if (serviceUuid != null) {
+                        client.setNotification(serviceUuid, next, true);
+                    } else {
+                        AgentLog.w(TAG, "no service mapping for notify char " + next + " (1003)");
+                    }
+                    return;
+                }
+                readyToFinish = true;
+            }
+            if (readyToFinish) {
+                onReady();
+            }
+        }
+    };
+
+    private void requestNextMtu() {
+        GattClient c = client;
+        if (c == null) {
+            return;
+        }
+        boolean readyToFinish = false;
+        int mtuToRequest = -1;
+        synchronized (lock) {
+            if (mtuLadderIndex >= MTU_LADDER.length) {
+                // 阶梯全部失败：保持默认 23（§3.2）。
+                AgentLog.w(TAG, info.getMac() + " MTU ladder exhausted, keep default 23");
+                readyToFinish = startNotifySubscribeLocked();
+            } else {
+                mtuToRequest = MTU_LADDER[mtuLadderIndex];
+            }
+        }
+        if (readyToFinish) {
+            onReady();
+        } else if (mtuToRequest > 0) {
+            c.requestMtu(mtuToRequest);
+        }
+    }
+
+    /**
+     * 按 notifyCharacteristics 逐个订阅（§7.3.3 CONFIGURING 阶段）。须在锁内调用。
+     *
+     * @return true = 无订阅项（或全部因 profile 缺失被跳过），调用方应在锁外收口 READY
+     */
+    private boolean startNotifySubscribeLocked() {
+        PollingConfig cfg = info.getPollingConfig();
+        List<UUID> chars = cfg == null ? Collections.emptyList() : cfg.getNotifyCharacteristics();
+        pendingNotifyChars = chars == null ? Collections.emptyList() : new ArrayList<>(chars);
+        notifySubscribeIndex = 0;
+        while (notifySubscribeIndex < pendingNotifyChars.size()) {
+            UUID charUuid = pendingNotifyChars.get(notifySubscribeIndex);
+            UUID serviceUuid = deps.pollResultChain.resolveService(info.getMac(), charUuid);
+            if (serviceUuid == null) {
+                // §16.4：profile 缺失 → 按 1003 配置错误告警并跳过该特征。
+                AgentLog.w(TAG, "no service mapping for notify char " + charUuid + " on "
+                        + info.getMac() + " (1003)");
+                notifySubscribeIndex++;
+                continue;
+            }
+            client.setNotification(serviceUuid, charUuid, true);
+            return false; // 等待 onNotifySubscribed 推进
+        }
+        return true;
+    }
+
+    /** 配置完成 → READY（唯一决策点，§7.2.1）：回 CONNECT_DEVICE ACK、drain 队列。 */
+    private void onReady() {
+        synchronized (lock) {
+            if (info.getState() != DeviceState.CONFIGURING) {
+                return;
+            }
+            transitionTo(DeviceState.READY);
+        }
+        String requestId;
+        synchronized (lock) {
+            requestId = pendingConnectRequestId;
+            pendingConnectRequestId = null;
+        }
+        if (requestId != null) {
+            // §7.2：CONNECT_DEVICE 的 ACK 语义为"设备已就绪"。
+            deps.stateReporter.reportCommandAck(requestId, 0, null);
+        }
+    }
+
+    /** 异常断开统一入口（回调线程）：清客户端、走 §7.5 重连。 */
+    private void handleAbnormalDisconnect(int status) {
+        synchronized (lock) {
+            handleAbnormalDisconnectLocked(status);
+        }
+    }
+
+    private void handleAbnormalDisconnectLocked(int status) {
+        DeviceState state = info.getState();
+        if (state != DeviceState.CONNECTING && state != DeviceState.SERVICE_DISCOVERING
+                && state != DeviceState.CONFIGURING && state != DeviceState.READY
+                && state != DeviceState.POLLING && state != DeviceState.COMMANDING) {
+            return;
+        }
+        lastGattStatus = status;
+        AgentLog.w(TAG, "abnormal disconnect: " + info.getMac() + " status=" + status);
+        closeClient();
+        // 立即放槽 + RECONNECTING 退避由调度器驱动（§7.5）。
+        deps.connectionScheduler.onAbnormalDisconnect(info.getMac());
+    }
+
+    private void closeClient() {
+        intentionalDisconnect = true;
+        GattClient c = client;
+        client = null;
+        if (c != null) {
+            c.disconnectAndClose();
+        }
+        if (deps != null) {
+            deps.responseBus.cancelAll(info.getMac());
+            deps.clientFactory.removeClient(info.getMac());
+        }
+    }
+
+    // ==================== 队列与配置 ====================
 
     @Override
     public void enqueueCommand(GattCommand cmd) {
@@ -174,6 +456,93 @@ public class DeviceControllerImpl implements DeviceController {
         }
     }
 
+    /**
+     * 挂起 CONNECT_DEVICE 的 requestId（§7.2 ACK 语义 = 已就绪）：
+     * READY 时回 0；最终失败（ERROR）时回 1xxx + rawStatus。
+     */
+    public void setPendingConnectAck(String requestId) {
+        synchronized (lock) {
+            this.pendingConnectRequestId = requestId;
+        }
+    }
+
+    // ==================== 断线重连与软重置（§7.5 / §7.8） ====================
+
+    @Override
+    public void onAbnormalDisconnect() {
+        synchronized (lock) {
+            // §7.5：异常断开 → RECONNECTING（退避计时不持槽）。调用方须先释放槽位
+            // （onSlotReleased 已将设备置 DISCONNECTED）。
+            if (info.getState() == DeviceState.DISCONNECTED) {
+                transitionTo(DeviceState.RECONNECTING);
+            }
+        }
+    }
+
+    @Override
+    public void onReconnectBackoffExpired() {
+        synchronized (lock) {
+            if (info.getState() != DeviceState.RECONNECTING) {
+                return;
+            }
+            transitionTo(DeviceState.WAITING_SLOT);
+            // §7.7：暂停期间不申请槽位，补迁 PAUSED。
+            if (pendingPause) {
+                pendingPause = false;
+                transitionTo(DeviceState.PAUSED);
+            }
+        }
+    }
+
+    @Override
+    public void onReconnectGiveUp() {
+        synchronized (lock) {
+            // §4.1：放弃重连只在 RECONNECTING 发生（DISCONNECTED→ERROR 非法）。
+            if (info.getState() == DeviceState.RECONNECTING) {
+                transitionTo(DeviceState.ERROR);
+            }
+        }
+        // CONNECT_DEVICE 挂起 ACK 的最终失败回报（§7.2 第 8 条）。
+        String requestId;
+        synchronized (lock) {
+            requestId = pendingConnectRequestId;
+            if (info.getState() == DeviceState.ERROR) {
+                pendingConnectRequestId = null;
+            }
+        }
+        if (requestId != null && info.getState() == DeviceState.ERROR && deps != null) {
+            deps.stateReporter.reportCommandAck(requestId, 1001, lastGattStatus, null);
+        }
+    }
+
+    @Override
+    public List<QueuedTask> drainPendingCommands() {
+        synchronized (lock) {
+            List<QueuedTask> drained = new ArrayList<>(info.getPendingCommands());
+            info.getPendingCommands().clear();
+            return drained;
+        }
+    }
+
+    @Override
+    public void reset() {
+        synchronized (lock) {
+            // §7.8 软重置：状态机重建回 REGISTERED（RESET 不走 4.1 常规迁移）。
+            info.getPendingCommands().clear();
+            closeClient();
+            stateMachine = new DeviceStateMachine();
+            info.setState(DeviceState.REGISTERED);
+            info.setReconnectCount(0);
+            info.setStateFlag(null);
+            pendingPause = false;
+            abortTransferOnPause = false;
+            pendingConnectRequestId = null;
+            AgentLog.i(TAG, "device " + info.getMac() + " reset to REGISTERED");
+        }
+    }
+
+    // ==================== 显式写接口（§8.1） ====================
+
     @Override
     public boolean isReady() {
         synchronized (lock) {
@@ -219,7 +588,7 @@ public class DeviceControllerImpl implements DeviceController {
     }
 
     @Override
-    public void updatePollResult(java.util.Map<java.util.UUID, byte[]> lastPollResult) {
+    public void updatePollResult(Map<UUID, byte[]> lastPollResult) {
         synchronized (lock) {
             info.setLastPollResult(lastPollResult);
         }
@@ -232,74 +601,23 @@ public class DeviceControllerImpl implements DeviceController {
         }
     }
 
-    @Override
-    public void onAbnormalDisconnect() {
-        synchronized (lock) {
-            // §7.5：异常断开 → RECONNECTING（退避计时不持槽）。调用方须先释放槽位
-            // （onSlotReleased 已将设备置 DISCONNECTED）。
-            if (info.getState() == DeviceState.DISCONNECTED) {
-                transitionTo(DeviceState.RECONNECTING);
-            }
-        }
-    }
-
-    @Override
-    public void onReconnectBackoffExpired() {
-        synchronized (lock) {
-            if (info.getState() != DeviceState.RECONNECTING) {
-                return;
-            }
-            transitionTo(DeviceState.WAITING_SLOT);
-            // §7.7：暂停期间不申请槽位，补迁 PAUSED。
-            if (pendingPause) {
-                pendingPause = false;
-                transitionTo(DeviceState.PAUSED);
-            }
-        }
-    }
-
-    @Override
-    public void onReconnectGiveUp() {
-        synchronized (lock) {
-            if (info.getState() == DeviceState.RECONNECTING
-                    || info.getState() == DeviceState.DISCONNECTED) {
-                transitionTo(DeviceState.ERROR);
-            }
-        }
-    }
-
-    @Override
-    public java.util.List<QueuedTask> drainPendingCommands() {
-        synchronized (lock) {
-            java.util.List<QueuedTask> drained = new java.util.ArrayList<>(info.getPendingCommands());
-            info.getPendingCommands().clear();
-            return drained;
-        }
-    }
-
-    @Override
-    public void reset() {
-        synchronized (lock) {
-            // §7.8 软重置：状态机重建回 REGISTERED（RESET 不走 4.1 常规迁移）。
-            info.getPendingCommands().clear();
-            stateMachine = new DeviceStateMachine();
-            info.setState(DeviceState.REGISTERED);
-            info.setReconnectCount(0);
-            info.setStateFlag(null);
-            pendingPause = false;
-            abortTransferOnPause = false;
-            AgentLog.i(TAG, "device " + info.getMac() + " reset to REGISTERED");
-        }
-    }
-
     public ManagedDeviceInfo getInfo() {
         synchronized (lock) {
             return info;
         }
     }
 
+    /** @return 实际协商的 MTU（§3.2 记录值），模拟模式返回默认 23。 */
+    public int getNegotiatedMtu() {
+        return negotiatedMtu;
+    }
+
     Object getLock() {
         return lock;
+    }
+
+    private long nowMs() {
+        return deps == null ? SystemClock.elapsedRealtime() : deps.clock.getAsLong();
     }
 
     private void transitionTo(DeviceState newState) {
@@ -308,8 +626,9 @@ public class DeviceControllerImpl implements DeviceController {
         stateMachine.transition(newState);
         info.setState(newState);
         AgentLog.i(TAG, "device " + info.getMac() + " state " + old + " -> " + newState);
+        reportDeviceState(newState);
         if (newState == DeviceState.READY) {
-            info.setLastConnectedTime(SystemClock.elapsedRealtime());
+            info.setLastConnectedTime(nowMs());
             info.setReconnectCount(0); // §7.5：重连成功清零计数
             drainPendingTasks();
         }
@@ -319,11 +638,40 @@ public class DeviceControllerImpl implements DeviceController {
             AgentLog.i(TAG, "device " + info.getMac() + " apply pendingPause -> PAUSED");
             transitionTo(DeviceState.PAUSED);
         }
-        // TODO M1: 通过 StateReporter 上报 DEVICE_STATE。
     }
 
+    /** DEVICE_STATE 事件上报（§10.2：state 取枚举名；ERROR 带 errorCode/rawStatus）。 */
+    private void reportDeviceState(DeviceState newState) {
+        if (deps == null || deps.stateReporter == null) {
+            return;
+        }
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("deviceMac", info.getMac());
+        payload.put("state", newState.name());
+        if (newState == DeviceState.ERROR) {
+            payload.put("errorCode", 1001);
+            if (lastGattStatus != 0) {
+                payload.put("rawStatus", lastGattStatus);
+            }
+        }
+        deps.stateReporter.report("DEVICE_STATE", payload);
+    }
+
+    /** READY 时刻消费欠账（§7.2.1 唯一决策点）：按优先级 drain 提交 GattExecutor 串行执行。 */
     private void drainPendingTasks() {
-        // M1: 留待 GattExecutor 串行执行；当前不取出队列，避免任务丢失。
-        // TODO M1: 从 pendingCommands 按优先级取任务，逐个提交给 GattExecutor。
+        if (deps == null || deps.gattExecutor == null) {
+            return; // 模拟模式不消费，保持 M1 行为
+        }
+        List<QueuedTask> tasks = drainPendingCommands();
+        for (QueuedTask task : tasks) {
+            if (task instanceof GattCommand) {
+                deps.gattExecutor.execute((GattCommand) task);
+            } else if (task instanceof PollingTask) {
+                deps.gattExecutor.executeTask((PollingTask) task);
+            }
+        }
+        if (!tasks.isEmpty()) {
+            AgentLog.i(TAG, "device " + info.getMac() + " drained " + tasks.size() + " tasks");
+        }
     }
 }

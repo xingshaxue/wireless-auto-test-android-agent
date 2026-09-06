@@ -4,6 +4,7 @@ import com.longcheer.agent.config.AgentConfig;
 import com.longcheer.agent.model.ConnectionRequest;
 import com.longcheer.agent.model.DeviceController;
 import com.longcheer.agent.model.DeviceState;
+import com.longcheer.agent.model.GattCommand;
 import com.longcheer.agent.model.ManagedDeviceInfo;
 import com.longcheer.agent.model.PollingConfig;
 import com.longcheer.agent.model.PollingTask;
@@ -254,5 +255,32 @@ public class PollingSchedulerImplTest {
 
         scheduler.tick(); // 标记已清 → 可再次申请
         verify(connectionScheduler, times(2)).requestSlot(any());
+    }
+
+    // ---------- 命令结果 ACK 闭环（§7.4 / §12.9） ----------
+
+    @Test
+    public void commandResultAcksWithValueAndRawStatus() {
+        GattCommand read = GattCommand.simple(MAC, "req-r1", GattCommand.Type.READ,
+                null, CHAR_A, null, GattCommand.Priority.HIGH);
+        scheduler.onCommandResult(read, com.longcheer.agent.model.GattResult.ok(new byte[]{0x55}));
+        verify(reporter).reportCommandAck(eq("req-r1"), eq(0),
+                org.mockito.ArgumentMatchers.argThat(r ->
+                        r instanceof Map && "VQ==".equals(((Map<?, ?>) r).get("value"))));
+
+        GattCommand write = GattCommand.simple(MAC, "req-w1", GattCommand.Type.WRITE,
+                null, CHAR_A, new byte[]{1}, GattCommand.Priority.HIGH);
+        scheduler.onCommandResult(write, com.longcheer.agent.model.GattResult.fail(133));
+        verify(reporter).reportCommandAck(eq("req-w1"), eq(1001), eq(133),
+                org.mockito.ArgumentMatchers.isNull());
+    }
+
+    @Test
+    public void commandResultWithoutRequestIdIsSkipped() {
+        // 规则触发的本地自治动作无 requestId，不产生 CMD_ACK（§10.3 对账口径）。
+        GattCommand cmd = GattCommand.simple(MAC, null, GattCommand.Type.WRITE,
+                null, CHAR_A, new byte[]{1}, GattCommand.Priority.HIGH);
+        scheduler.onCommandResult(cmd, com.longcheer.agent.model.GattResult.ok(null));
+        verify(reporter, never()).reportCommandAck(any(), anyInt(), any());
     }
 }

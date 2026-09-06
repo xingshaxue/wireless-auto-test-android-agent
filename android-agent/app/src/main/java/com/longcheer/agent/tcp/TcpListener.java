@@ -12,4 +12,8 @@ public interface TcpListener {
     void onFrame(byte[] frame);
 
     void onDisconnected();
+
+    /** 每次（重）连成功时回调；AgentService 借此重新 REGISTER（断线重连后重新注册）。 */
+    default void onConnected() {
+    }
 }

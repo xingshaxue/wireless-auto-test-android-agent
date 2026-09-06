@@ -128,12 +128,24 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         String deviceId = stringValue(command.get("deviceId"));
         boolean lazyConnect = booleanValue(command.get("lazyConnect"), false);
         DeviceController controller = bleCentralManager.createController(mac, deviceId);
-        if (!lazyConnect) {
-            connectionScheduler.requestSlot(
-                    ConnectionRequest.now(mac, ConnectionRequest.PRIORITY_HIGH, ConnectionRequest.Reason.COMMAND));
+        if (lazyConnect) {
+            // §7.2：lazyConnect=true 仅注册不连接，立即回 ACK。
+            stateReporter.reportCommandAck(requestId, 0, null);
+            return;
         }
-        stateReporter.reportCommandAck(requestId, 0, null);
-        // TODO M1: CONNECT_DEVICE 的 ACK 语义为"设备已就绪"；当前骨架阶段简化回 0。
+        if (controller.isReady()) {
+            stateReporter.reportCommandAck(requestId, 0, null); // 已 READY，幂等（§7.2 第 9 条）
+            return;
+        }
+        // §7.2：ACK 语义为"设备已就绪"——挂起 requestId，READY 时回 0、最终失败回 1xxx。
+        if (controller instanceof com.longcheer.agent.ble.DeviceControllerImpl) {
+            ((com.longcheer.agent.ble.DeviceControllerImpl) controller).setPendingConnectAck(requestId);
+        } else {
+            // 非真实实现（Stub）无挂起能力：维持骨架行为回 0。
+            stateReporter.reportCommandAck(requestId, 0, null);
+        }
+        connectionScheduler.requestSlot(
+                ConnectionRequest.now(mac, ConnectionRequest.PRIORITY_HIGH, ConnectionRequest.Reason.COMMAND));
     }
 
     private void handleDisconnectDevice(String requestId, String mac) {

@@ -29,9 +29,10 @@ public class ActionExecutor {
 
     private final DeviceRegistry deviceRegistry;
     private final ConnectionScheduler connectionScheduler;
-    private final PollingScheduler pollingScheduler;
     private final StateReporter stateReporter;
     private final LongSupplier clock;
+    /** SET_INTERVAL 用；装配环（chain→executor→scheduler）经 setter 后补。 */
+    private volatile PollingScheduler pollingScheduler;
 
     public ActionExecutor(DeviceRegistry deviceRegistry,
                           ConnectionScheduler connectionScheduler,
@@ -43,6 +44,11 @@ public class ActionExecutor {
         this.pollingScheduler = pollingScheduler;
         this.stateReporter = stateReporter;
         this.clock = clock;
+    }
+
+    /** 装配层补注 PollingScheduler（打破 chain→executor→scheduler 构造环）。 */
+    public void setPollingScheduler(PollingScheduler pollingScheduler) {
+        this.pollingScheduler = pollingScheduler;
     }
 
     public void execute(String mac, List<PollRule.RuleAction> actions) {
@@ -162,7 +168,11 @@ public class ActionExecutor {
         PollingConfig updated = new PollingConfig(intervalMs,
                 old.getReadCharacteristics(), old.getNotifyCharacteristics(), old.isReportOnlyChanged());
         controller.setPollingConfig(updated);
-        pollingScheduler.updateConfig(mac, updated);
+        if (pollingScheduler != null) {
+            pollingScheduler.updateConfig(mac, updated);
+        } else {
+            AgentLog.w(TAG, "SET_INTERVAL without PollingScheduler (assembly race), mac=" + mac);
+        }
     }
 
     /** SET_DEVICE_STATE：写业务标记 stateFlag，不动状态机（§7.3.2）。 */

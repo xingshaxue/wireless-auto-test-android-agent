@@ -53,4 +53,10 @@ public interface PollResultChain {
      * notifyMinReportIntervalMs 节流上报。
      */
     void onNotification(String mac, UUID charUuid, byte[] value);
+
+    /**
+     * 解析特征的所属服务（§16.4 profile）：无映射返回 null
+     * （CONFIGURING 订阅/执行侧按配置错误 1003 处理）。
+     */
+    UUID resolveService(String mac, UUID charUuid);
 }

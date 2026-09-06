@@ -8,10 +8,10 @@ import java.net.Socket;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.BlockingDeque;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -38,7 +38,8 @@ public class TcpClientImpl implements TcpClient {
     private static final int MAX_RECONNECT_DELAY_MS = 60000;
 
     private final ProtocolCodec codec = new ProtocolCodec();
-    private final BlockingQueue<byte[]> writeQueue = new LinkedBlockingQueue<>();
+    // 断连期间写请求不丢弃（修复 REGISTER 丢包）：排队到重连后按序发出。
+    private final BlockingDeque<byte[]> writeQueue = new LinkedBlockingDeque<>();
     private final AtomicBoolean started = new AtomicBoolean(false);
     private final AtomicBoolean stopped = new AtomicBoolean(false);
     private final AtomicBoolean connected = new AtomicBoolean(false);
@@ -96,6 +97,7 @@ public class TcpClientImpl implements TcpClient {
                 connected.set(true);
                 reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
                 AgentLog.i(TAG, "TCP connected to " + host + ":" + port);
+                notifyConnected();
 
                 final Socket readerSocket = currentSocket;
                 readerExecutor.submit(() -> readLoop(readerSocket));
@@ -167,8 +169,14 @@ public class TcpClientImpl implements TcpClient {
             }
             OutputStream out = outputStream;
             if (out == null) {
-                // 尚未连接，数据丢弃；上层 StateReporter 负责缓存补报
-                AgentLog.w(TAG, "TCP not connected, drop " + data.length + " bytes");
+                // 尚未连接：放回队列头部等待重连，不丢弃（§3.1 断线恢复语义）。
+                writeQueue.offerFirst(data);
+                try {
+                    Thread.sleep(100L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
                 continue;
             }
             try {
@@ -280,6 +288,17 @@ public class TcpClientImpl implements TcpClient {
                 l.onDisconnected();
             } catch (Exception ignored) {
                 // listener 异常不影响重连
+            }
+        }
+    }
+
+    private void notifyConnected() {
+        TcpListener l = listener;
+        if (l != null) {
+            try {
+                l.onConnected();
+            } catch (Exception ignored) {
+                // listener 异常不影响连接流程
             }
         }
     }

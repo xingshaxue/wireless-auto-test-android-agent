@@ -113,6 +113,7 @@ public class PollResultChainImpl implements PollResultChain {
      * 解析特征的所属服务（§16.4 profile）：step 未显式给 service 时使用；
      * 无映射返回 null（执行侧按配置错误回 1003 特征不存在）。
      */
+    @Override
     public UUID resolveService(String mac, UUID charUuid) {
         Map<UUID, UUID> profile = deviceProfiles.get(mac);
         return profile == null ? null : profile.get(charUuid);

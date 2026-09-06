@@ -254,8 +254,19 @@ public class PollingSchedulerImpl implements PollingScheduler, GattExecutorImpl.
 
     @Override
     public void onCommandResult(GattCommand command, GattResult result) {
-        // TODO BLE 里程碑：经 StateReporter 回 CMD_ACK（携带 errorCode + rawStatus 透传，§12.9）。
-        AgentLog.d(TAG, "command result: " + command.getDeviceMac() + " -> " + result);
+        // §7.4 第 8 步：命令执行结果回 CMD_ACK（requestId 对账；rawStatus 透传，§12.9）。
+        if (command.getRequestId() == null) {
+            return; // 本地自治动作（规则触发）无 requestId
+        }
+        if (result.isSuccess()) {
+            Map<String, Object> ack = new HashMap<>();
+            if (command.getType() == GattCommand.Type.READ && result.getValue() != null) {
+                ack.put("value", java.util.Base64.getEncoder().encodeToString(result.getValue()));
+            }
+            stateReporter.reportCommandAck(command.getRequestId(), 0, ack);
+        } else {
+            stateReporter.reportCommandAck(command.getRequestId(), 1001, result.getStatus(), null);
+        }
     }
 
     @Override

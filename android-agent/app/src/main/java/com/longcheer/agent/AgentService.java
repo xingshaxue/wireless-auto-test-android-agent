@@ -126,6 +126,27 @@ public class AgentService extends Service {
     // 运行时统计（M5，§13）：随心跳周期上报 CONNECTION_STATISTICS。
     private com.longcheer.agent.report.StatsCollector statsCollector;
 
+    // 心跳管理器（§3.1）：注册成功后启动。
+    private com.longcheer.agent.tcp.HeartbeatManager heartbeatManager;
+
+    private void startHeartbeat() {
+        if (heartbeatManager == null) {
+            long interval = agentConfig == null
+                    ? com.longcheer.agent.tcp.HeartbeatManager.DEFAULT_INTERVAL_MS
+                    : agentConfig.getHeartbeatIntervalMs();
+            heartbeatManager = new com.longcheer.agent.tcp.HeartbeatManager(tcpClient, interval,
+                    () -> {
+                        Map<String, Object> m = new HashMap<>();
+                        m.put("slotsUsed", connectionSlotManager.occupiedSlots().size());
+                        m.put("slotsTotal", connectionSlotManager.slotCount());
+                        m.put("devicesManaged", deviceRegistry.size());
+                        m.put("devicesReady", deviceRegistry.findByState(DeviceState.READY).size());
+                        return m;
+                    });
+        }
+        heartbeatManager.start();
+    }
+
     public void setFileTransferManager(com.longcheer.agent.transfer.FileTransferManager manager) {
         this.fileTransferManager = manager;
     }
@@ -247,6 +268,34 @@ public class AgentService extends Service {
     synchronized void initializeComponents() {
         if (initialized.getAndSet(true)) {
             return;
+        }
+
+        // 生产装配：当前仍是 Stub 时尝试装配真实组件；BLE 不可用/装配失败回退 Stub 并上报。
+        if (tcpClient instanceof StubTcpClient) {
+            try {
+                AgentAssembler.Components components = AgentAssembler.assemble(this);
+                if (components != null) {
+                    this.tcpClient = components.tcpClient;
+                    this.bleCentralManager = components.bleCentralManager;
+                    this.deviceRegistry = components.deviceRegistry;
+                    this.connectionSlotManager = components.connectionSlotManager;
+                    this.connectionScheduler = components.connectionScheduler;
+                    this.pollingScheduler = components.pollingScheduler;
+                    this.stateReporter = components.stateReporter;
+                    this.commandDispatcher = components.commandDispatcher;
+                    this.pollResultChain = components.pollResultChain;
+                    setFileTransferManager(components.fileTransferManager);
+                    setStatsCollector(components.statsCollector);
+                    AgentLog.i(TAG, "real components assembled and installed");
+                } else {
+                    stateReporter.report("ERROR",
+                            buildErrorPayload(0, "BLE unavailable, running with stubs", null));
+                }
+            } catch (RuntimeException e) {
+                AgentLog.e(TAG, "assembly failed, keep stubs: " + e.getMessage());
+                stateReporter.report("ERROR",
+                        buildErrorPayload(0, "assembly failed: " + e.getMessage(), null));
+            }
         }
 
         // 初始化 BLE 中心；实现内部负责在主线程完成 BluetoothAdapter 初始化。
@@ -653,6 +702,13 @@ public class AgentService extends Service {
     private void releaseResources() {
         initialized.set(false);
 
+        if (heartbeatManager != null) {
+            heartbeatManager.stop();
+            heartbeatManager = null;
+        }
+        if (statsCollector != null) {
+            statsCollector.stop();
+        }
         if (connectionScheduler != null) {
             connectionScheduler.stop();
         }
@@ -753,6 +809,14 @@ public class AgentService extends Service {
             if (fileTransferManager != null) {
                 fileTransferManager.onTcpDisconnected();
             }
+        }
+
+        @Override
+        public void onConnected() {
+            // 断线重连后重新注册（§7.1）；写队列已保证 REGISTER 不丢（TcpClientImpl）。
+            AgentLog.i(TAG, "tcp (re)connected, re-register");
+            connectAndRegister();
+            startHeartbeat();
         }
     }
 
@@ -1251,6 +1315,11 @@ public class AgentService extends Service {
         @Override
         public void onNotification(String mac, UUID charUuid, byte[] value) {
             // no-op
+        }
+
+        @Override
+        public UUID resolveService(String mac, UUID charUuid) {
+            return null;
         }
     }
 }

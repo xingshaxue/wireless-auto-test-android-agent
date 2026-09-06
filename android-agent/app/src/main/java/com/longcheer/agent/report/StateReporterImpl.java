@@ -56,9 +56,17 @@ public class StateReporterImpl implements StateReporter {
 
     @Override
     public void reportCommandAck(String requestId, int errorCode, Object result) {
+        reportCommandAck(requestId, errorCode, 0, result);
+    }
+
+    @Override
+    public void reportCommandAck(String requestId, int errorCode, int rawStatus, Object result) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("requestId", requestId);
         payload.put("errorCode", errorCode);
+        if (rawStatus != 0) {
+            payload.put("rawStatus", rawStatus);
+        }
         if (result != null) {
             payload.put("result", result);
         }
