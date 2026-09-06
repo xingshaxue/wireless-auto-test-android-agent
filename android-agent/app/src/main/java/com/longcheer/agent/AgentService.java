@@ -119,6 +119,13 @@ public class AgentService extends Service {
     // 运行期配置
     private AgentConfig agentConfig;
 
+    // 文件传输管理器（M4）：由装配层注入；未注入时帧仅记日志。
+    private com.longcheer.agent.transfer.FileTransferManager fileTransferManager;
+
+    public void setFileTransferManager(com.longcheer.agent.transfer.FileTransferManager manager) {
+        this.fileTransferManager = manager;
+    }
+
     public AgentService() {
         // 默认使用占位实现；真实实现由对应模块通过注入构造传入。
         this.tcpClient = new StubTcpClient();
@@ -352,6 +359,11 @@ public class AgentService extends Service {
         Map<String, Object> configMap = (Map<String, Object>) configRaw;
         AgentConfig config = AgentConfig.fromJson(new JSONObject(configMap));
         applyConfig(config);
+
+        // 注册/重连成功：挂起的文件下载任务发 FILE_DOWNLOAD_RESUME 续传（§7.6）。
+        if (fileTransferManager != null) {
+            fileTransferManager.onTcpReconnected();
+        }
     }
 
     private void applyConfig(AgentConfig config) {
@@ -618,14 +630,24 @@ public class AgentService extends Service {
 
         @Override
         public void onFrame(byte[] frame) {
-            // 文件/日志帧当前版本由底层模块自行消费；Service 仅做日志。
-            Log.d(TAG, "onFrame length=" + (frame == null ? 0 : frame.length));
+            // 文件/日志二进制帧（§16.3）路由到 FileTransferManager。
+            if (frame == null) {
+                return;
+            }
+            if (fileTransferManager != null) {
+                fileTransferManager.onFrame(frame);
+            } else {
+                Log.d(TAG, "onFrame length=" + frame.length + " (no transfer manager)");
+            }
         }
 
         @Override
         public void onDisconnected() {
             Log.w(TAG, "tcp disconnected");
-            // TcpClient 内部负责重连；Service 保持前台与调度器运行。
+            // 下载中任务挂起，重连后经 FILE_DOWNLOAD_RESUME 续传（§7.6）。
+            if (fileTransferManager != null) {
+                fileTransferManager.onTcpDisconnected();
+            }
         }
     }
 
@@ -966,6 +988,16 @@ public class AgentService extends Service {
         @Override
         public void updateConfig(String mac, PollingConfig config) {
             Log.d(TAG, "StubPollingScheduler.updateConfig " + mac);
+        }
+
+        @Override
+        public void suspendPolling(String mac) {
+            Log.d(TAG, "StubPollingScheduler.suspendPolling " + mac);
+        }
+
+        @Override
+        public void resumePolling(String mac) {
+            Log.d(TAG, "StubPollingScheduler.resumePolling " + mac);
         }
 
         @Override

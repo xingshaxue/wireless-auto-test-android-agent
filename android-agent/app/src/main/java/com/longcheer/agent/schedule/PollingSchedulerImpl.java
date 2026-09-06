@@ -55,6 +55,9 @@ public class PollingSchedulerImpl implements PollingScheduler, GattExecutorImpl.
     private final Map<String, PollingConfig> configs = new ConcurrentHashMap<>();
     /** 欠账防重入（§6.1）：任务仍在队列/执行中未回调时只标记不入队。 */
     private final Map<String, Boolean> pendingPollFlags = new ConcurrentHashMap<>();
+    /** 轮询暂停中的设备（§7.6 文件传输期间，§7.7 语义由 DeviceController.PAUSED 覆盖）。 */
+    private final java.util.Set<String> suspendedPolls =
+            java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
     private ScheduledExecutorService scheduler;
     private volatile boolean running = false;
     /** 钳制后的实际 tick 周期（§6.4 硬约束）。 */
@@ -112,8 +115,7 @@ public class PollingSchedulerImpl implements PollingScheduler, GattExecutorImpl.
     }
 
     @Override
-    public void updateConfig(String mac, PollingConfig config) {
-        if (config != null) {
+    public void updateConfig(String mac, PollingConfig config) {        if (config != null) {
             configs.put(mac, config);
         }
         // 设备配置变化可能影响全局最小轮询间隔 → 重校验 tick 钳制（§6.4）。
@@ -150,6 +152,18 @@ public class PollingSchedulerImpl implements PollingScheduler, GattExecutorImpl.
             return Math.max(1, cap);
         }
         return configured;
+    }
+
+    @Override
+    public void suspendPolling(String mac) {
+        suspendedPolls.add(mac);
+        AgentLog.i(TAG, "polling suspended: " + mac);
+    }
+
+    @Override
+    public void resumePolling(String mac) {
+        suspendedPolls.remove(mac);
+        AgentLog.i(TAG, "polling resumed: " + mac);
     }
 
     @Override
@@ -230,6 +244,9 @@ public class PollingSchedulerImpl implements PollingScheduler, GattExecutorImpl.
         for (DeviceController controller : deviceRegistry.allControllers()) {
             ManagedDeviceInfo info = controller.snapshot();
             String mac = info.getMac();
+            if (suspendedPolls.contains(mac)) {
+                continue; // §7.6：文件传输期间暂停该设备轮询
+            }
             PollingConfig cfg = configs.containsKey(mac) ? configs.get(mac) : info.getPollingConfig();
             if (cfg == null || cfg.getIntervalMs() <= 0) {
                 continue;

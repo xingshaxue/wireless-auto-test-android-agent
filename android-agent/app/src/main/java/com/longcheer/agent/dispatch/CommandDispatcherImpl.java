@@ -32,6 +32,7 @@ public class CommandDispatcherImpl implements CommandDispatcher {
     private final StateReporter stateReporter;
     private final AgentConfig config;
     private final com.longcheer.agent.poll.PollResultChain pollResultChain;
+    private final com.longcheer.agent.transfer.FileTransferManager fileTransferManager;
 
     public CommandDispatcherImpl(BleCentralManager bleCentralManager,
                                  DeviceRegistry deviceRegistry,
@@ -39,7 +40,8 @@ public class CommandDispatcherImpl implements CommandDispatcher {
                                  PollingScheduler pollingScheduler,
                                  StateReporter stateReporter,
                                  AgentConfig config,
-                                 com.longcheer.agent.poll.PollResultChain pollResultChain) {
+                                 com.longcheer.agent.poll.PollResultChain pollResultChain,
+                                 com.longcheer.agent.transfer.FileTransferManager fileTransferManager) {
         this.bleCentralManager = bleCentralManager;
         this.deviceRegistry = deviceRegistry;
         this.connectionScheduler = connectionScheduler;
@@ -47,6 +49,7 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         this.stateReporter = stateReporter;
         this.config = config;
         this.pollResultChain = pollResultChain;
+        this.fileTransferManager = fileTransferManager;
     }
 
     @Override
@@ -82,6 +85,12 @@ public class CommandDispatcherImpl implements CommandDispatcher {
                 break;
             case "SET_POLL_RULES":
                 handleSetPollRules(command, requestId, mac);
+                break;
+            case "FILE_TRANSFER":
+                handleFileTransfer(command, requestId, mac);
+                break;
+            case "FILE_CANCEL":
+                handleFileCancel(command, requestId);
                 break;
             case "GET_STATUS":
                 handleGetStatus(requestId, mac);
@@ -253,6 +262,60 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         stateReporter.reportCommandAck(requestId, 0, null);
     }
 
+    /**
+     * FILE_TRANSFER（§7.6 / §A.2）：受理文件传输任务。
+     * ACK 语义为"已受理"；下载/传输结果经 FILE_DOWNLOAD_* 与 FILE_RESULT 事件上报。
+     */
+    private void handleFileTransfer(Map<String, Object> command, String requestId, String mac) {
+        String taskId = stringValue(command.get("taskId"));
+        String fileId = stringValue(command.get("fileId"));
+        Object sizeRaw = command.get("size");
+        if (taskId == null || fileId == null || mac == null || !(sizeRaw instanceof Number)) {
+            stateReporter.reportCommandAck(requestId, 2001, "missing taskId/fileId/deviceMac/size");
+            return;
+        }
+        String sha256B64 = stringValue(command.get("sha256"));
+        byte[] sha256 = null;
+        if (sha256B64 != null) {
+            try {
+                sha256 = java.util.Base64.getDecoder().decode(sha256B64);
+            } catch (IllegalArgumentException e) {
+                stateReporter.reportCommandAck(requestId, 2001, "invalid sha256 base64");
+                return;
+            }
+        }
+        Object windowRaw = command.get("windowSize");
+        int windowSize = windowRaw instanceof Number ? ((Number) windowRaw).intValue() : 64;
+        Object chunkRaw = command.get("chunkSize");
+        // 默认 509 = 512 MTU − 3（§7.6）；实际 MTU 协商值接入后由 BLE 里程碑修正。
+        int chunkSize = chunkRaw instanceof Number ? ((Number) chunkRaw).intValue() : 509;
+
+        int errorCode = fileTransferManager == null ? 2001
+                : fileTransferManager.startTransfer(taskId, fileId, mac,
+                        ((Number) sizeRaw).longValue(), sha256, chunkSize, windowSize);
+        stateReporter.reportCommandAck(requestId, errorCode, null);
+    }
+
+    /** FILE_CANCEL（§A.2）：taskId 必填；取消任意时刻生效，幂等。 */
+    private void handleFileCancel(Map<String, Object> command, String requestId) {
+        String taskId = stringValue(command.get("taskId"));
+        if (taskId == null) {
+            stateReporter.reportCommandAck(requestId, 2001, "missing taskId");
+            return;
+        }
+        if (fileTransferManager != null) {
+            fileTransferManager.cancelTransfer(taskId);
+        }
+        stateReporter.reportCommandAck(requestId, 0, null);
+    }
+
+    /** PAUSE_DEVICE 与 pinned 传输的交互（§7.7）：默认挂起，abortTransfer=true 中止。 */
+    private void pauseTransferIfAny(String mac, boolean abortTransfer) {
+        if (fileTransferManager != null) {
+            fileTransferManager.pauseTransferForDevice(mac, abortTransfer);
+        }
+    }
+
     private void handleGetStatus(String requestId, String mac) {
         // TODO M1: 组装整机 + 设备快照；当前返回简化结果。
         Map<String, Object> result = Collections.singletonMap("devicesManaged", deviceRegistry.size());
@@ -304,6 +367,7 @@ public class CommandDispatcherImpl implements CommandDispatcher {
             return;
         }
         boolean abortTransfer = booleanValue(command.get("abortTransfer"), false);
+        pauseTransferIfAny(mac, abortTransfer);
         controller.pause(abortTransfer);
         stateReporter.reportCommandAck(requestId, 0, null);
     }
@@ -313,6 +377,9 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         if (controller == null) {
             stateReporter.reportCommandAck(requestId, 2003, "device not found");
             return;
+        }
+        if (fileTransferManager != null) {
+            fileTransferManager.resumeTransferForDevice(mac);
         }
         controller.resume();
         stateReporter.reportCommandAck(requestId, 0, null);
