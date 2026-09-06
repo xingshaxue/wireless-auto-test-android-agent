@@ -13,6 +13,7 @@ import com.longcheer.agent.schedule.PollingScheduler;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -22,25 +23,30 @@ import java.util.UUID;
  */
 public class CommandDispatcherImpl implements CommandDispatcher {
 
+    private static final String TAG = "CommandDispatcher";
+
     private final BleCentralManager bleCentralManager;
     private final DeviceRegistry deviceRegistry;
     private final ConnectionScheduler connectionScheduler;
     private final PollingScheduler pollingScheduler;
     private final StateReporter stateReporter;
     private final AgentConfig config;
+    private final com.longcheer.agent.poll.PollResultChain pollResultChain;
 
     public CommandDispatcherImpl(BleCentralManager bleCentralManager,
                                  DeviceRegistry deviceRegistry,
                                  ConnectionScheduler connectionScheduler,
                                  PollingScheduler pollingScheduler,
                                  StateReporter stateReporter,
-                                 AgentConfig config) {
+                                 AgentConfig config,
+                                 com.longcheer.agent.poll.PollResultChain pollResultChain) {
         this.bleCentralManager = bleCentralManager;
         this.deviceRegistry = deviceRegistry;
         this.connectionScheduler = connectionScheduler;
         this.pollingScheduler = pollingScheduler;
         this.stateReporter = stateReporter;
         this.config = config;
+        this.pollResultChain = pollResultChain;
     }
 
     @Override
@@ -48,6 +54,9 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         String type = commandType(command);
         String requestId = stringValue(command.get("requestId"));
         String mac = stringValue(command.get("deviceMac"));
+        com.longcheer.agent.log.AgentLog.i(TAG, "dispatch " + type
+                + (mac == null ? "" : " mac=" + mac)
+                + (requestId == null ? "" : " reqId=" + requestId));
 
         switch (type) {
             case "CONNECT_DEVICE":
@@ -70,6 +79,9 @@ public class CommandDispatcherImpl implements CommandDispatcher {
                 break;
             case "SET_POLLING_INTERVAL":
                 handleSetPollingInterval(command, requestId, mac);
+                break;
+            case "SET_POLL_RULES":
+                handleSetPollRules(command, requestId, mac);
                 break;
             case "GET_STATUS":
                 handleGetStatus(requestId, mac);
@@ -213,6 +225,31 @@ public class CommandDispatcherImpl implements CommandDispatcher {
                 old.getReadCharacteristics(), old.getNotifyCharacteristics(), old.isReportOnlyChanged());
         controller.setPollingConfig(updated);
         pollingScheduler.updateConfig(mac, updated);
+        stateReporter.reportCommandAck(requestId, 0, null);
+    }
+
+    /** SET_POLL_RULES（§A.2 / §7.3.2）：整集替换设备规则；字段映射缺失则拒绝并回 2001。 */
+    @SuppressWarnings("unchecked")
+    private void handleSetPollRules(Map<String, Object> command, String requestId, String mac) {
+        DeviceController controller = deviceRegistry.findByMac(mac);
+        if (controller == null) {
+            stateReporter.reportCommandAck(requestId, 2003, "device not found");
+            return;
+        }
+        Object rulesRaw = command.get("rules");
+        if (!(rulesRaw instanceof List)) {
+            stateReporter.reportCommandAck(requestId, 2001, "missing rules");
+            return;
+        }
+        List<com.longcheer.agent.model.PollRule> rules =
+                com.longcheer.agent.poll.PollResultChainImpl.toPollRulesFromMaps((List<Object>) rulesRaw);
+        boolean accepted = pollResultChain.setPollRules(mac, rules);
+        if (!accepted) {
+            // 校验失败已在链路上报 ERROR；ACK 回配置/协议错误码。
+            stateReporter.reportCommandAck(requestId, 2001, "rule references unmapped field");
+            return;
+        }
+        controller.setPollRules(rules);
         stateReporter.reportCommandAck(requestId, 0, null);
     }
 

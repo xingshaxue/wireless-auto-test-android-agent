@@ -14,8 +14,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.logging.Level;
-import java.util.logging.Logger;
+
+import com.longcheer.agent.log.AgentLog;
 
 /**
  * {@link TcpClient} 的基础实现（SDD §3.1 / §16.1）。
@@ -30,7 +30,7 @@ import java.util.logging.Logger;
  */
 public class TcpClientImpl implements TcpClient {
 
-    private static final Logger LOGGER = Logger.getLogger(TcpClientImpl.class.getName());
+    private static final String TAG = "TcpClient";
 
     private static final int READ_BUFFER_SIZE = 8192;
     private static final int CONNECT_TIMEOUT_MS = 10000;
@@ -84,7 +84,7 @@ public class TcpClientImpl implements TcpClient {
                 outputStream = currentSocket.getOutputStream();
                 connected.set(true);
                 reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
-                LOGGER.log(Level.INFO, "TCP connected to {0}:{1}", new Object[]{host, port});
+                AgentLog.i(TAG, "TCP connected to " + host + ":" + port);
 
                 final Socket readerSocket = currentSocket;
                 readerExecutor.submit(() -> readLoop(readerSocket));
@@ -98,7 +98,8 @@ public class TcpClientImpl implements TcpClient {
                 if (stopped.get()) {
                     break;
                 }
-                LOGGER.log(Level.WARNING, "TCP connect failed: {0}", e.getMessage());
+                AgentLog.w(TAG, "TCP connect failed: " + e.getMessage()
+                        + ", retry in " + reconnectDelay + "ms");
             } finally {
                 if (connected.compareAndSet(true, false)) {
                     notifyDisconnected();
@@ -131,7 +132,7 @@ public class TcpClientImpl implements TcpClient {
             }
         } catch (Exception e) {
             if (!stopped.get()) {
-                LOGGER.log(Level.WARNING, "TCP read error: {0}", e.getMessage());
+                AgentLog.w(TAG, "TCP read error: " + e.getMessage());
             }
         } finally {
             connected.set(false);
@@ -156,6 +157,7 @@ public class TcpClientImpl implements TcpClient {
             OutputStream out = outputStream;
             if (out == null) {
                 // 尚未连接，数据丢弃；上层 StateReporter 负责缓存补报
+                AgentLog.w(TAG, "TCP not connected, drop " + data.length + " bytes");
                 continue;
             }
             try {
@@ -163,7 +165,7 @@ public class TcpClientImpl implements TcpClient {
                 out.flush();
             } catch (Exception e) {
                 if (!stopped.get()) {
-                    LOGGER.log(Level.WARNING, "TCP write error: {0}", e.getMessage());
+                    AgentLog.w(TAG, "TCP write error: " + e.getMessage());
                 }
                 closeSocket(socket);
             }
@@ -183,7 +185,7 @@ public class TcpClientImpl implements TcpClient {
                     l.onFrame(msg.getFrame());
                 }
             } catch (Exception e) {
-                LOGGER.log(Level.WARNING, "TcpListener callback error: {0}", e.getMessage());
+                AgentLog.w(TAG, "TcpListener callback error: " + e.getMessage());
             }
         }
     }
@@ -255,6 +257,7 @@ public class TcpClientImpl implements TcpClient {
     }
 
     private void notifyDisconnected() {
+        AgentLog.w(TAG, "TCP disconnected from " + host + ":" + port);
         TcpListener l = listener;
         if (l != null) {
             try {

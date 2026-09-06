@@ -1,9 +1,9 @@
 package com.longcheer.agent.schedule;
 
 import android.os.SystemClock;
-import android.util.Log;
 
 import com.longcheer.agent.config.AgentConfig;
+import com.longcheer.agent.log.AgentLog;
 import com.longcheer.agent.model.ConnectionRequest;
 import com.longcheer.agent.model.ConnectionSlot;
 import com.longcheer.agent.model.DeviceController;
@@ -138,14 +138,14 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
             // 调小：新上限低于常驻 + pinned 数量时拒绝调整（§5.4）。
             int required = requiredSlots();
             if (max < required) {
-                Log.w(TAG, "setMaxSlots refuse: max=" + max + " < required=" + required);
+                AgentLog.w(TAG, "setMaxSlots refuse: max=" + max + " < required=" + required);
                 return false;
             }
             // 按 5.4 驱逐顺序（selectVictim）释放超出上限的槽位。
             while (activePool.size() > max) {
                 String victim = selectVictim(clock.getAsLong());
                 if (victim == null) {
-                    Log.w(TAG, "setMaxSlots: no evictable device, refuse");
+                    AgentLog.w(TAG, "setMaxSlots: no evictable device, refuse");
                     return false;
                 }
                 evict(victim, clock.getAsLong(), false);
@@ -253,7 +253,7 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
             if (CONNECTING_STATES.contains(state)) {
                 ConnectionSlot slot = slotManager.slotOf(mac);
                 if (slot != null && now > slot.getAcquireTime() + config.getSetupBudgetMs()) {
-                    Log.w(TAG, "setup budget exceeded, force release " + mac);
+                    AgentLog.w(TAG, "setup budget exceeded, force release " + mac);
                     evict(mac, now, true); // §12.5：超预算强释放并计一次连接失败（重连计数属 BLE 里程碑）
                 }
             } else if (state == DeviceState.READY) {
@@ -276,7 +276,7 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
 
         // 4) 槽位泄漏巡检（§12.5 兜底）。
         for (String mac : slotManager.releaseLeakedSlots()) {
-            Log.w(TAG, "leaked slot force released: " + mac);
+            AgentLog.w(TAG, "leaked slot force released: " + mac);
             releaseOccupied(mac, true, now + config.getCooldownMs());
         }
 
@@ -298,8 +298,12 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
                 }
                 String victim = selectVictim(now);
                 if (victim == null) {
+                    AgentLog.w(TAG, "no victim for " + mac + " (reason=" + best.getReason()
+                            + "), wait for aging");
                     return; // 全部不可踢 → 排队等待，老化机制兜底（§5.2 第 6 条）
                 }
+                AgentLog.i(TAG, "preempt " + victim + " for " + mac + " (reason="
+                        + best.getReason() + ", effectivePrio=" + effectivePriority(best, now) + ")");
                 evict(victim, now, false);
                 continue;
             }
@@ -435,6 +439,8 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
             return;
         }
         idleSince.remove(mac);
+        AgentLog.i(TAG, "grant slot: " + mac + " reason=" + req.getReason()
+                + " waited=" + (clock.getAsLong() - req.getRequestTime()) + "ms");
         activePool.put(mac, controller);
         controller.onSlotAcquired();
     }
@@ -444,6 +450,8 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
      * 并记录冷却时间防止立即抢回槽位（§5.2 第 5 条 / §5.3）。
      */
     private void evict(String mac, long now, boolean force) {
+        AgentLog.i(TAG, "evict " + mac + " (force=" + force + "), cooldown "
+                + config.getCooldownMs() + "ms");
         cooldownUntil.put(mac, now + config.getCooldownMs());
         releaseOccupied(mac, force, 0);
     }

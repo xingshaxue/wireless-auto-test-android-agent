@@ -23,6 +23,8 @@ import android.provider.Settings;
 import android.util.Log;
 
 import com.longcheer.agent.ble.BleCentralManager;
+import com.longcheer.agent.log.AgentLog;
+import com.longcheer.agent.log.CrashLogHandler;
 import com.longcheer.agent.model.DeviceController;
 import com.longcheer.agent.config.AgentConfig;
 import com.longcheer.agent.config.DeviceConfig;
@@ -32,6 +34,7 @@ import com.longcheer.agent.model.DeviceState;
 import com.longcheer.agent.model.ManagedDeviceInfo;
 import com.longcheer.agent.model.PollingConfig;
 import com.longcheer.agent.registry.DeviceRegistry;
+import com.longcheer.agent.poll.PollResultChain;
 import com.longcheer.agent.report.StateReporter;
 import com.longcheer.agent.schedule.ConnectionScheduler;
 import com.longcheer.agent.schedule.ConnectionSlotManager;
@@ -105,6 +108,7 @@ public class AgentService extends Service {
     private PollingScheduler pollingScheduler;
     private StateReporter stateReporter;
     private CommandDispatcher commandDispatcher;
+    private PollResultChain pollResultChain;
 
     // 启动参数
     private String serverHost = "127.0.0.1";
@@ -125,6 +129,7 @@ public class AgentService extends Service {
         this.pollingScheduler = new StubPollingScheduler();
         this.stateReporter = new StubStateReporter();
         this.commandDispatcher = new StubCommandDispatcher();
+        this.pollResultChain = new StubPollResultChain();
     }
 
     /**
@@ -133,7 +138,8 @@ public class AgentService extends Service {
     AgentService(TcpClient tcpClient, BleCentralManager bleCentralManager,
                  DeviceRegistry deviceRegistry, ConnectionSlotManager connectionSlotManager,
                  ConnectionScheduler connectionScheduler, PollingScheduler pollingScheduler,
-                 StateReporter stateReporter, CommandDispatcher commandDispatcher) {
+                 StateReporter stateReporter, CommandDispatcher commandDispatcher,
+                 PollResultChain pollResultChain) {
         this.tcpClient = tcpClient;
         this.bleCentralManager = bleCentralManager;
         this.deviceRegistry = deviceRegistry;
@@ -142,12 +148,18 @@ public class AgentService extends Service {
         this.pollingScheduler = pollingScheduler;
         this.stateReporter = stateReporter;
         this.commandDispatcher = commandDispatcher;
+        this.pollResultChain = pollResultChain;
     }
 
     @Override
     public void onCreate() {
         super.onCreate();
-        Log.i(TAG, "onCreate");
+        // SDD §13：日志核心先行初始化——滚动落盘 + 崩溃捕获（DEBUG 默认关闭）。
+        AgentLog.init(new java.io.File(getFilesDir(), "logs"), false);
+        Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler(
+                new CrashLogHandler(new java.io.File(getFilesDir(), "logs"), previous));
+        AgentLog.i(TAG, "onCreate");
         createNotificationChannel();
         startForegroundInternal();
         acquireWakeLock();
@@ -368,6 +380,17 @@ public class AgentService extends Service {
                 controller.setPollingConfig(pollingConfig);
                 pollingScheduler.updateConfig(mac, pollingConfig);
             }
+
+            // 装载 Decoder 字段映射 + 规则集 + profile 到轮询处理链（§16.4 / §7.3.2）；
+            // 校验失败（规则引用未映射字段）由链路拒绝并上报配置错误。
+            boolean chainOk = pollResultChain.updateDeviceConfig(mac, device.getType(),
+                    com.longcheer.agent.poll.PollResultChainImpl.toFieldMappings(device),
+                    com.longcheer.agent.poll.PollResultChainImpl.toPollRules(device),
+                    com.longcheer.agent.poll.PollResultChainImpl.toProfile(device));
+            if (!chainOk) {
+                Log.w(TAG, "device chain config rejected: " + mac);
+            }
+            controller.setPollRules(com.longcheer.agent.poll.PollResultChainImpl.toPollRules(device));
 
             if (device.isPersistent()) {
                 connectionScheduler.setPersistent(mac, true);
@@ -743,6 +766,31 @@ public class AgentService extends Service {
             info.setPollingConfig(pollingConfig);
             return info;
         }
+
+        @Override
+        public void setStateFlag(String stateFlag) {
+            // no-op
+        }
+
+        @Override
+        public void updatePollTimes(long lastPollTime, long nextPollTime) {
+            // no-op
+        }
+
+        @Override
+        public void setPollDataStale(boolean stale) {
+            // no-op
+        }
+
+        @Override
+        public void updatePollResult(Map<UUID, byte[]> lastPollResult) {
+            // no-op
+        }
+
+        @Override
+        public void setNotifyBoostUntil(long notifyBoostUntil) {
+            // no-op
+        }
     }
 
     private static class StubDeviceRegistry implements DeviceRegistry {
@@ -926,6 +974,11 @@ public class AgentService extends Service {
         }
 
         @Override
+        public void onPollFailed(String mac, int errorCode, int rawStatus) {
+            Log.d(TAG, "StubPollingScheduler.onPollFailed " + mac);
+        }
+
+        @Override
         public long estimateFullRoundMs() {
             return 0;
         }
@@ -967,6 +1020,51 @@ public class AgentService extends Service {
         @Override
         public void dispatch(Map<String, Object> command) {
             Log.d(TAG, "StubCommandDispatcher.dispatch " + command);
+        }
+    }
+
+    private static class StubPollResultChain implements PollResultChain {
+        @Override
+        public Map<String, Object> decode(String mac, Map<UUID, byte[]> raw) {
+            return new HashMap<>();
+        }
+
+        @Override
+        public List<com.longcheer.agent.model.PollRule.RuleAction> evaluate(String mac, Map<String, Object> fields) {
+            return new ArrayList<>();
+        }
+
+        @Override
+        public void execute(String mac, List<com.longcheer.agent.model.PollRule.RuleAction> actions) {
+            // no-op
+        }
+
+        @Override
+        public void registerHandler(String deviceType, com.longcheer.agent.poll.PollResultHandler handler) {
+            // no-op
+        }
+
+        @Override
+        public boolean updateDeviceConfig(String mac, String deviceType,
+                                          List<com.longcheer.agent.model.FieldMapping> fields,
+                                          List<com.longcheer.agent.model.PollRule> rules,
+                                          Map<UUID, UUID> profile) {
+            return true;
+        }
+
+        @Override
+        public boolean setPollRules(String mac, List<com.longcheer.agent.model.PollRule> rules) {
+            return true;
+        }
+
+        @Override
+        public Map<String, Object> process(String mac, Map<UUID, byte[]> raw) {
+            return new HashMap<>();
+        }
+
+        @Override
+        public void onNotification(String mac, UUID charUuid, byte[] value) {
+            // no-op
         }
     }
 }

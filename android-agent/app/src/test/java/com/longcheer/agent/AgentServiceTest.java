@@ -105,7 +105,8 @@ public class AgentServiceTest {
                 ConnectionScheduler.class,
                 PollingScheduler.class,
                 StateReporter.class,
-                CommandDispatcher.class);
+                CommandDispatcher.class,
+                com.longcheer.agent.poll.PollResultChain.class);
         assertNotNull(ctor);
         assertFalse("injection constructor should not be public", Modifier.isPublic(ctor.getModifiers()));
         assertFalse("injection constructor should not be private", Modifier.isPrivate(ctor.getModifiers()));

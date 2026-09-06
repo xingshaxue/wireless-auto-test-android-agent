@@ -16,7 +16,9 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
@@ -37,6 +39,7 @@ public class CommandDispatcherTest {
     private PollingScheduler pollingScheduler;
     private StateReporter stateReporter;
     private AgentConfig config;
+    private com.longcheer.agent.poll.PollResultChain pollResultChain;
     private CommandDispatcher dispatcher;
 
     @Before
@@ -47,10 +50,11 @@ public class CommandDispatcherTest {
         pollingScheduler = mock(PollingScheduler.class);
         stateReporter = mock(StateReporter.class);
         config = mock(AgentConfig.class);
+        pollResultChain = mock(com.longcheer.agent.poll.PollResultChain.class);
         when(config.getMaxSlots()).thenReturn(3);
 
         dispatcher = new CommandDispatcherImpl(bleCentralManager, deviceRegistry,
-                connectionScheduler, pollingScheduler, stateReporter, config);
+                connectionScheduler, pollingScheduler, stateReporter, config, pollResultChain);
     }
 
     @Test
@@ -262,6 +266,54 @@ public class CommandDispatcherTest {
 
         verify(controller).enqueueCommand(any());
         verify(connectionScheduler, never()).requestSlot(any());
+    }
+
+    @Test
+    public void testSetPollRulesAccepted() {
+        DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.READY);
+        when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);
+        when(pollResultChain.setPollRules(eq("AA:BB:CC:DD:EE:FF"), any())).thenReturn(true);
+
+        Map<String, Object> rule = new HashMap<>();
+        rule.put("ruleId", "r1");
+        rule.put("priority", 10);
+        List<Map<String, Object>> conditions = new ArrayList<>();
+        Map<String, Object> cond = new HashMap<>();
+        cond.put("field", "temperature");
+        cond.put("op", "GT");
+        cond.put("value", 40);
+        conditions.add(cond);
+        rule.put("conditions", conditions);
+
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "SET_POLL_RULES");
+        cmd.put("requestId", "req-12");
+        cmd.put("deviceMac", "AA:BB:CC:DD:EE:FF");
+        cmd.put("rules", new ArrayList<>(java.util.Collections.singletonList(rule)));
+
+        dispatcher.dispatch(cmd);
+
+        verify(pollResultChain).setPollRules(eq("AA:BB:CC:DD:EE:FF"), any());
+        verify(controller).setPollRules(any());
+        verify(stateReporter).reportCommandAck("req-12", 0, null);
+    }
+
+    @Test
+    public void testSetPollRulesRejectedByChainReturns2001() {
+        DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.READY);
+        when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);
+        when(pollResultChain.setPollRules(any(), any())).thenReturn(false);
+
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "SET_POLL_RULES");
+        cmd.put("requestId", "req-13");
+        cmd.put("deviceMac", "AA:BB:CC:DD:EE:FF");
+        cmd.put("rules", new ArrayList<>());
+
+        dispatcher.dispatch(cmd);
+
+        verify(stateReporter).reportCommandAck(eq("req-13"), eq(2001), any());
+        verify(controller, never()).setPollRules(any());
     }
 
     private DeviceController mockController(String mac, DeviceState state) {

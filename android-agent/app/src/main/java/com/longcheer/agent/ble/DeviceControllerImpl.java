@@ -2,8 +2,10 @@ package com.longcheer.agent.ble;
 
 import android.os.SystemClock;
 
+import com.longcheer.agent.log.AgentLog;
 import com.longcheer.agent.model.DeviceController;
 import com.longcheer.agent.model.DeviceState;
+import com.longcheer.agent.model.DeviceStateMachine;
 import com.longcheer.agent.model.GattCommand;
 import com.longcheer.agent.model.ManagedDeviceInfo;
 import com.longcheer.agent.model.PollRule;
@@ -19,7 +21,10 @@ import java.util.List;
  */
 public class DeviceControllerImpl implements DeviceController {
 
+    private static final String TAG = "DeviceController";
+
     private final ManagedDeviceInfo info;
+    private final DeviceStateMachine stateMachine = new DeviceStateMachine();
     private final Object lock = new Object();
     private volatile boolean pendingPause = false;
     private volatile boolean abortTransferOnPause = false;
@@ -190,6 +195,42 @@ public class DeviceControllerImpl implements DeviceController {
         }
     }
 
+    @Override
+    public void setStateFlag(String stateFlag) {
+        synchronized (lock) {
+            info.setStateFlag(stateFlag);
+        }
+    }
+
+    @Override
+    public void updatePollTimes(long lastPollTime, long nextPollTime) {
+        synchronized (lock) {
+            info.setLastPollTime(lastPollTime);
+            info.setNextPollTime(nextPollTime);
+        }
+    }
+
+    @Override
+    public void setPollDataStale(boolean stale) {
+        synchronized (lock) {
+            info.setPollDataStale(stale);
+        }
+    }
+
+    @Override
+    public void updatePollResult(java.util.Map<java.util.UUID, byte[]> lastPollResult) {
+        synchronized (lock) {
+            info.setLastPollResult(lastPollResult);
+        }
+    }
+
+    @Override
+    public void setNotifyBoostUntil(long notifyBoostUntil) {
+        synchronized (lock) {
+            info.setNotifyBoostUntil(notifyBoostUntil);
+        }
+    }
+
     public ManagedDeviceInfo getInfo() {
         synchronized (lock) {
             return info;
@@ -201,9 +242,11 @@ public class DeviceControllerImpl implements DeviceController {
     }
 
     private void transitionTo(DeviceState newState) {
-        // M1: 简化状态迁移，不严格校验迁移表；M2/M3 补充状态机校验。
+        // §4.1：迁移合法性由状态机拦截，非法迁移抛 IllegalStateException。
         DeviceState old = info.getState();
+        stateMachine.transition(newState);
         info.setState(newState);
+        AgentLog.i(TAG, "device " + info.getMac() + " state " + old + " -> " + newState);
         if (newState == DeviceState.READY) {
             info.setLastConnectedTime(SystemClock.elapsedRealtime());
             drainPendingTasks();
