@@ -59,9 +59,10 @@ sleep 1
 
 echo "==> 启动 Agent 前台服务（虚拟 DUT 模式）"
 "$ADB" shell am startservice \
+    -a com.longcheer.agent.ACTION_START \
     -n com.longcheer.agent/.AgentService \
-    --es serverHost 10.0.2.2 --ei serverPort $MOCK_PORT \
-    --es token smoke-token --es deviceId emulator-phone \
+    --es server_host 10.0.2.2 --ei server_port $MOCK_PORT \
+    --es token smoke-token --es device_id emulator-phone \
     --ez simulateDut true || { echo "服务启动失败"; exit 5; }
 
 echo "==> 等待冒烟场景跑完"
