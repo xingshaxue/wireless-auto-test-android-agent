@@ -1,7 +1,7 @@
 <resources>
-    <string name="app_name">Wireless Auto Test Agent</string>
-    <string name="notification_channel_name">Agent Service</string>
-    <string name="notification_channel_description">Keeps the wireless auto-test agent running</string>
-    <string name="foreground_notification_title">Wireless Auto Test Agent</string>
-    <string name="foreground_notification_text">Running…</string>
+    <string name="app_name">无线测试Agent</string>
+    <string name="notification_channel_name">Agent 服务</string>
+    <string name="notification_channel_description">保持无线自动化测试 Agent 后台运行</string>
+    <string name="foreground_notification_title">无线测试 Agent 运行中</string>
+    <string name="foreground_notification_text">正在与服务器保持连接…</string>
 </resources>

@@ -28,6 +28,7 @@ import com.longcheer.agent.log.CrashLogHandler;
 import com.longcheer.agent.model.DeviceController;
 import com.longcheer.agent.config.AgentConfig;
 import com.longcheer.agent.config.DeviceConfig;
+import com.longcheer.agent.config.StartParams;
 import com.longcheer.agent.dispatch.CommandDispatcher;
 import com.longcheer.agent.model.ConnectionRequest;
 import com.longcheer.agent.model.DeviceState;
@@ -328,25 +329,90 @@ public class AgentService extends Service {
         return initialized.get();
     }
 
+    /**
+     * 控制台状态快照（ConsoleActivity 经 Binder 读取；全部为只读摘要）。
+     */
+    public Map<String, Object> statusSummary() {
+        Map<String, Object> s = new HashMap<>();
+        s.put("initialized", initialized.get());
+        s.put("tcpConnected", tcpClient != null && tcpClient.isConnected());
+        s.put("devicesManaged", deviceRegistry == null ? 0 : deviceRegistry.size());
+        s.put("devicesReady", deviceRegistry == null ? 0
+                : deviceRegistry.findByState(DeviceState.READY).size());
+        s.put("configVersion", agentConfig == null ? -1 : agentConfig.getConfigVersion());
+        s.put("simulateDut", simulateDut);
+        s.put("server", serverHost + ":" + serverPort);
+        return s;
+    }
+
     private void parseStartExtras(Intent intent) {
-        if (intent == null) {
-            return;
+        // 脱网独立运营：启动参数 = Intent extras > 本地已存配置 > 内置默认（StartParams）。
+        Map<String, String> extras = new HashMap<>();
+        if (intent != null) {
+            if (intent.hasExtra(EXTRA_SERVER_HOST)) {
+                extras.put(StartParams.KEY_SERVER_HOST, intent.getStringExtra(EXTRA_SERVER_HOST));
+            }
+            if (intent.hasExtra(EXTRA_SERVER_PORT)) {
+                extras.put(StartParams.KEY_SERVER_PORT,
+                        String.valueOf(intent.getIntExtra(EXTRA_SERVER_PORT, 0)));
+            }
+            if (intent.hasExtra(EXTRA_TOKEN)) {
+                extras.put(StartParams.KEY_TOKEN, intent.getStringExtra(EXTRA_TOKEN));
+            }
+            if (intent.hasExtra(EXTRA_DEVICE_ID)) {
+                extras.put(StartParams.KEY_DEVICE_ID, intent.getStringExtra(EXTRA_DEVICE_ID));
+            }
+            if (intent.hasExtra(EXTRA_SIMULATE_DUT)) {
+                extras.put(StartParams.KEY_SIMULATE_DUT,
+                        String.valueOf(intent.getBooleanExtra(EXTRA_SIMULATE_DUT, false)));
+            }
         }
-        if (intent.hasExtra(EXTRA_SERVER_HOST)) {
-            serverHost = intent.getStringExtra(EXTRA_SERVER_HOST);
+        android.content.SharedPreferences prefs = getSharedPreferences("agent_prefs", MODE_PRIVATE);
+        Map<String, String> stored = new HashMap<>();
+        for (String key : new String[]{StartParams.KEY_SERVER_HOST, StartParams.KEY_SERVER_PORT,
+                StartParams.KEY_TOKEN, StartParams.KEY_DEVICE_ID}) {
+            String v = prefs.getString(key, null);
+            if (v != null) {
+                stored.put(key, v);
+            }
         }
-        if (intent.hasExtra(EXTRA_SERVER_PORT)) {
-            serverPort = intent.getIntExtra(EXTRA_SERVER_PORT, serverPort);
+        // 布尔键按 boolean 类型存取（与 ConsoleActivity 写入保持一致）。
+        stored.put(StartParams.KEY_SIMULATE_DUT,
+                String.valueOf(prefs.getBoolean(StartParams.KEY_SIMULATE_DUT, false)));
+        stored.put(StartParams.KEY_AUTO_START,
+                String.valueOf(prefs.getBoolean(StartParams.KEY_AUTO_START, false)));
+        StartParams params = StartParams.resolve(extras, stored);
+
+        // extras 携带的新值持久化：下次开机/进程重启免配。
+        if (!extras.isEmpty()) {
+            android.content.SharedPreferences.Editor editor = prefs.edit();
+            for (Map.Entry<String, String> e : extras.entrySet()) {
+                if (e.getValue() == null) {
+                    continue;
+                }
+                if (StartParams.KEY_SIMULATE_DUT.equals(e.getKey())
+                        || StartParams.KEY_AUTO_START.equals(e.getKey())) {
+                    editor.putBoolean(e.getKey(), Boolean.parseBoolean(e.getValue()));
+                } else {
+                    editor.putString(e.getKey(), e.getValue());
+                }
+            }
+            editor.apply();
         }
-        if (intent.hasExtra(EXTRA_TOKEN)) {
-            token = intent.getStringExtra(EXTRA_TOKEN);
+
+        serverHost = params.serverHost;
+        serverPort = params.serverPort;
+        token = params.token;
+        simulateDut = params.simulateDut;
+        deviceId = params.deviceId;
+        if (deviceId == null || deviceId.isEmpty()) {
+            // 缺省设备 ID：ANDROID_ID 派生并固化，避免每次重启换身份。
+            deviceId = "phone-" + Settings.Secure.getString(getContentResolver(),
+                    Settings.Secure.ANDROID_ID);
+            prefs.edit().putString(StartParams.KEY_DEVICE_ID, deviceId).apply();
         }
-        if (intent.hasExtra(EXTRA_DEVICE_ID)) {
-            deviceId = intent.getStringExtra(EXTRA_DEVICE_ID);
-        }
-        if (intent.hasExtra(EXTRA_SIMULATE_DUT)) {
-            simulateDut = intent.getBooleanExtra(EXTRA_SIMULATE_DUT, false);
-        }
+        AgentLog.i(TAG, "start params: host=" + serverHost + " port=" + serverPort
+                + " deviceId=" + deviceId + " simulateDut=" + simulateDut);
     }
 
     private void connectAndRegister() {
