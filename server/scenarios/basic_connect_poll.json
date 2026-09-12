@@ -1,0 +1,33 @@
+{
+  "name": "基本连接与轮询",
+  "description": "对齐用例 TC04-01：CONNECT → READY → 写入制造变化 → POLL_RESULT（reportOnlyChanged 下必须制造数据变化才会上报，§6.3）",
+  "setup": [
+    {"name": "加快轮询节奏", "action": "set_polling_interval",
+     "deviceMac": "AA:BB:CC:DD:EE:01", "intervalMs": 5000,
+     "expectAck": {"errorCode": 0}, "ackTimeoutMs": 30000}
+  ],
+  "steps": [
+    {"name": "连接设备", "action": "command", "command": "CONNECT_DEVICE",
+     "params": {"deviceMac": "AA:BB:CC:DD:EE:01"},
+     "expectAck": {"errorCode": 0}, "ackTimeoutMs": 30000},
+    {"name": "等待 READY", "action": "expect",
+     "event": "DEVICE_STATE",
+     "match": {"deviceMac": "AA:BB:CC:DD:EE:01", "state": "READY"},
+     "timeoutMs": 60000},
+    {"name": "写入电量 90 制造变化", "action": "command", "command": "WRITE_CHAR",
+     "params": {"deviceMac": "AA:BB:CC:DD:EE:01", "service": "180F",
+                "char": "2A19", "payload": "Wg=="},
+     "expectAck": {"errorCode": 0}, "ackTimeoutMs": 30000},
+    {"name": "等待轮询结果 battery=90", "action": "expect",
+     "event": "POLL_RESULT",
+     "match": {"deviceMac": "AA:BB:CC:DD:EE:01", "values.battery": 90},
+     "timeoutMs": 120000},
+    {"name": "暂停 2s", "action": "delay", "ms": 2000},
+    {"name": "断言槽位", "action": "assertView",
+     "path": "slots.slotsUsed", "expect": {"lte": 3}}
+  ],
+  "teardown": [
+    {"name": "断开设备", "action": "command", "command": "DISCONNECT_DEVICE",
+     "params": {"deviceMac": "AA:BB:CC:DD:EE:01"}, "optional": true}
+  ]
+}

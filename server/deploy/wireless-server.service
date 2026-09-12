@@ -1,0 +1,19 @@
+[Unit]
+Description=Wireless Auto-Test Framework Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wireless
+Group=wireless
+WorkingDirectory=/opt/wireless-server
+ExecStart=/opt/wireless-server/.venv/bin/python -m wireless_server --config /etc/wireless-server/server.toml
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+# 数据与日志目录由部署脚本创建并对 wireless 用户可写：
+#   /opt/wireless-server/data  /opt/wireless-server/logs
+
+[Install]
+WantedBy=multi-user.target

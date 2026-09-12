@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# 虚拟环境
+.venv/
+
+# 本地运行产物（数据/日志/本地配置）
+run/
+server.toml
+data/
+logs/

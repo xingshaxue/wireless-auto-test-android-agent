@@ -1,0 +1,32 @@
+# 无限自动化框架服务器配置样例（对应 src/wireless_server/settings.py）
+
+[gateway]
+host = "0.0.0.0"
+port = 10086
+agent_token = "change-me"          # 生产必须修改；agent 注册时校验（SDD §11.2）
+# tls_cert = "/etc/wireless/server.crt"   # 可选 TLS；启用后握手失败不降级
+# tls_key  = "/etc/wireless/server.key"
+write_queue_max = 1000
+ack_timeout_ms = 30000
+ack_max_retries = 1
+heartbeat_timeout_factor = 3
+
+[api]
+host = "0.0.0.0"
+port = 8080
+token = "change-me-api"            # REST/WS Bearer token，生产必须修改
+# tls_cert = ""
+# tls_key = ""
+
+[storage]
+db_path = "data/server.db"
+files_dir = "data/files"
+logs_dir = "data/agent_logs"
+files_quota_mb = 10240
+chunk_size = 4096
+
+[log]
+level = "INFO"
+dir = "logs"
+max_bytes = 10485760
+backup_count = 5
