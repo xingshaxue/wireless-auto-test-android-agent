@@ -294,6 +294,65 @@ public class PollingSchedulerImplTest {
     }
 
     @Test
+    public void readAckCarriesBase64HexAndDecodedWhenMapped() {
+        // §7.4/§A.3：READ_CHAR 成功 ACK 携带 value(base64) + valueHex + decoded（映射命中）。
+        when(chain.decode(eq(MAC), anyMap()))
+                .thenReturn(Collections.singletonMap("battery", 85));
+        GattCommand read = GattCommand.simple(MAC, "req-r2", GattCommand.Type.READ,
+                null, CHAR_A, null, GattCommand.Priority.HIGH);
+
+        scheduler.onCommandResult(read, com.longcheer.agent.model.GattResult.ok(new byte[]{0x55}));
+
+        ArgumentCaptor<Object> captor = ArgumentCaptor.forClass(Object.class);
+        verify(reporter).reportCommandAck(eq("req-r2"), eq(0), captor.capture());
+        Map<?, ?> ack = (Map<?, ?>) captor.getValue();
+        assertEquals("VQ==", ack.get("value"));
+        assertEquals("55", ack.get("valueHex"));
+        assertEquals(85, ack.get("decoded"));
+    }
+
+    @Test
+    public void readAckOmitsDecodedWhenUnmapped() {
+        // 未命中 fields 映射：Decoder 回退 "char:<uuid>" 键 → decoded 键省略（§A.3）。
+        when(chain.decode(eq(MAC), anyMap()))
+                .thenReturn(Collections.singletonMap("char:" + CHAR_A, "55"));
+        GattCommand read = GattCommand.simple(MAC, "req-r3", GattCommand.Type.READ,
+                null, CHAR_A, null, GattCommand.Priority.HIGH);
+
+        scheduler.onCommandResult(read, com.longcheer.agent.model.GattResult.ok(new byte[]{0x55}));
+
+        ArgumentCaptor<Object> captor = ArgumentCaptor.forClass(Object.class);
+        verify(reporter).reportCommandAck(eq("req-r3"), eq(0), captor.capture());
+        Map<?, ?> ack = (Map<?, ?>) captor.getValue();
+        assertEquals("VQ==", ack.get("value"));
+        assertEquals("55", ack.get("valueHex"));
+        assertFalse(ack.containsKey("decoded"));
+    }
+
+    @Test
+    public void writeAckCarriesWrittenTrue() {
+        GattCommand write = GattCommand.simple(MAC, "req-w2", GattCommand.Type.WRITE,
+                null, CHAR_A, new byte[]{1}, GattCommand.Priority.HIGH);
+
+        scheduler.onCommandResult(write, com.longcheer.agent.model.GattResult.ok(null));
+
+        verify(reporter).reportCommandAck(eq("req-w2"), eq(0),
+                org.mockito.ArgumentMatchers.argThat(r ->
+                        r instanceof Map && Boolean.TRUE.equals(((Map<?, ?>) r).get("written"))));
+    }
+
+    @Test
+    public void expiredCommandAcks3002() {
+        // §7.4.1：TTL 过期未执行 → 3002 COMMAND_EXPIRED（不走 1xxx）。
+        GattCommand read = GattCommand.simple(MAC, "req-x1", GattCommand.Type.READ,
+                null, CHAR_A, null, GattCommand.Priority.HIGH);
+
+        scheduler.onCommandResult(read, com.longcheer.agent.model.GattResult.expired());
+
+        verify(reporter).reportCommandAck("req-x1", 3002, "command expired");
+    }
+
+    @Test
     public void commandResultWithoutRequestIdIsSkipped() {
         // 规则触发的本地自治动作无 requestId，不产生 CMD_ACK（§10.3 对账口径）。
         GattCommand cmd = GattCommand.simple(MAC, null, GattCommand.Type.WRITE,

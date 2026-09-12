@@ -174,9 +174,7 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         }
         GattCommand cmd = GattCommand.simple(mac, requestId, GattCommand.Type.READ, service, characteristic,
                 null, GattCommand.Priority.HIGH);
-        controller.enqueueCommand(cmd);
-        requestSlotIfNotReady(controller, mac);
-        stateReporter.reportCommandAck(requestId, 0, "queued");
+        enqueueCommandWithBackpressure(controller, cmd, requestId, mac);
     }
 
     private void handleWriteChar(Map<String, Object> command, String requestId, String mac) {
@@ -195,9 +193,28 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         byte[] payload = payloadB64 == null ? null : java.util.Base64.getDecoder().decode(payloadB64);
         GattCommand cmd = GattCommand.simple(mac, requestId, GattCommand.Type.WRITE, service, characteristic,
                 payload, GattCommand.Priority.HIGH);
-        controller.enqueueCommand(cmd);
+        enqueueCommandWithBackpressure(controller, cmd, requestId, mac);
+    }
+
+    /**
+     * READ_CHAR/WRITE_CHAR 入队（§7.4）：ACK 语义为"执行结果"，入队时不应答——
+     * 执行完成后由 GattExecutor 结果回调回 CMD_ACK（成功携带读值，失败 1xxx+rawStatus）。
+     * 此处仅处理"未执行"类即时 ACK：队列满 3001（§7.4.1）；TTL 挂到命令上，
+     * 过期由执行侧丢弃并回 3002。
+     */
+    private void enqueueCommandWithBackpressure(DeviceController controller, GattCommand cmd,
+                                                String requestId, String mac) {
+        long ttlMs = config.getCommandTtlMs();
+        if (ttlMs > 0) {
+            cmd.expireTime = cmd.getEnqueueTime() + ttlMs;
+        }
+        boolean accepted = controller.enqueueCommand(cmd);
+        if (!accepted) {
+            // §7.4.1：队列满（或设备已终止）→ 立即回 3001 QUEUE_FULL，requestId 不悬挂。
+            stateReporter.reportCommandAck(requestId, 3001, "queue full");
+            return;
+        }
         requestSlotIfNotReady(controller, mac);
-        stateReporter.reportCommandAck(requestId, 0, "queued");
     }
 
     /** §7.4：设备未连接时命令入队后转 WAITING_SLOT 并申请连接槽（HIGH 优先级）。 */

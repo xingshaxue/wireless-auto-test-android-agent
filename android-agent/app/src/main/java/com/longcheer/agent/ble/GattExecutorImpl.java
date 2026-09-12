@@ -33,7 +33,7 @@ public class GattExecutorImpl implements GattExecutor {
         /** 轮询任务完成：errorCode=0 成功；否则中止，results 为已采集部分。 */
         void onTaskResult(String deviceMac, Map<UUID, byte[]> results, int errorCode, int rawStatus);
 
-        /** 单命令执行完成（CMD_ACK 结果回报在 BLE 里程碑接通）。 */
+        /** 单命令执行完成（§7.4 第 8 步：实现侧据此回 CMD_ACK，携带 requestId 对账）。 */
         void onCommandResult(GattCommand command, GattResult result);
     }
 
@@ -60,17 +60,29 @@ public class GattExecutorImpl implements GattExecutor {
 
     @Override
     public void execute(GattCommand command) {
-        executor.execute(() -> {
-            PollStep step = new PollStep(command.getType(), command.getServiceUuid(),
-                    command.getCharUuid(), command.getPayload(),
-                    command.getTimeoutMs(), command.getMaxRetry());
-            GattResult result = executeStepWithRetry(command.getDeviceMac(), step);
-            AgentLog.d(TAG, "command " + command.getType() + " mac=" + command.getDeviceMac()
-                    + " -> " + result);
+        executor.execute(() -> runCommand(command));
+    }
+
+    /** 同步执行单条命令（测试可直接驱动；§7.4 第 8 步结果经 TaskCallback 回报）。 */
+    void runCommand(GattCommand command) {
+        if (clock.getAsLong() > command.getExpireTime()) {
+            // §7.4.1：TTL 过期未执行 → 丢弃，不上 GATT，由 ACK 侧回 3002。
+            AgentLog.w(TAG, "command expired, dropped: " + command.getType()
+                    + " mac=" + command.getDeviceMac());
             if (callback != null) {
-                callback.onCommandResult(command, result);
+                callback.onCommandResult(command, GattResult.expired());
             }
-        });
+            return;
+        }
+        PollStep step = new PollStep(command.getType(), command.getServiceUuid(),
+                command.getCharUuid(), command.getPayload(),
+                command.getTimeoutMs(), command.getMaxRetry());
+        GattResult result = executeStepWithRetry(command.getDeviceMac(), step);
+        AgentLog.d(TAG, "command " + command.getType() + " mac=" + command.getDeviceMac()
+                + " -> " + result);
+        if (callback != null) {
+            callback.onCommandResult(command, result);
+        }
     }
 
     @Override

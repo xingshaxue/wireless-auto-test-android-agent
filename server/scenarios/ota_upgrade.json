@@ -1,0 +1,42 @@
+{
+  "name": "OTA 升级全流程",
+  "description": "OTA 场景：上传固件 → 服务器下发到设备 → 命令开始升级 → 黑窗等待（设备断连）→ 回连 → 读版本/状态断言 → 升级后功能验证。前置：OTA 包已通过「文件传输」页上传，fileId 替换为实际上传返回值；虚拟 DUT 用 status 特征(2A24)扮演版本号，真机换成固件版本特征（建议配 fields 映射以用 decoded 断言字面量）。",
+  "setup": [
+    {"name": "加快轮询节奏", "action": "set_polling_interval",
+     "deviceMac": "AA:BB:CC:DD:EE:01", "intervalMs": 5000,
+     "expectAck": {"errorCode": 0}, "ackTimeoutMs": 30000}
+  ],
+  "steps": [
+    {"name": "下发 OTA 包", "action": "file_transfer",
+     "deviceMac": "AA:BB:CC:DD:EE:01", "fileId": "file-9ec1f1af"},
+    {"name": "等待传输完成", "action": "expect", "event": "FILE_RESULT",
+     "match": {"errorCode": 0}, "timeoutMs": 120000},
+    {"name": "命令设备开始升级", "action": "command", "command": "WRITE_CHAR",
+     "params": {"deviceMac": "AA:BB:CC:DD:EE:01", "service": "180A",
+                "char": "2A24", "payload": "VVBHUkFESU5H"},
+     "expectAck": {"errorCode": 0}, "ackTimeoutMs": 30000},
+    {"name": "升级黑窗等待 10s", "action": "delay", "ms": 10000},
+    {"name": "回连设备（兼 ERROR 恢复入口）", "action": "command",
+     "command": "CONNECT_DEVICE",
+     "params": {"deviceMac": "AA:BB:CC:DD:EE:01"},
+     "expectAck": {"errorCode": 0}, "ackTimeoutMs": 30000},
+    {"name": "等待 READY", "action": "expect", "event": "DEVICE_STATE",
+     "match": {"deviceMac": "AA:BB:CC:DD:EE:01", "state": "READY"},
+     "timeoutMs": 60000},
+    {"name": "确认版本/状态正确", "action": "command", "command": "READ_CHAR",
+     "params": {"deviceMac": "AA:BB:CC:DD:EE:01", "service": "180A",
+                "char": "2A24"},
+     "expectAck": {"errorCode": 0, "result.decoded": "UPGRADING"},
+     "ackTimeoutMs": 30000},
+    {"name": "升级后功能验证（读电量）", "action": "command",
+     "command": "READ_CHAR",
+     "params": {"deviceMac": "AA:BB:CC:DD:EE:01", "service": "180F",
+                "char": "2A19"},
+     "expectAck": {"errorCode": 0, "result.decoded": {"gte": 0}},
+     "ackTimeoutMs": 30000}
+  ],
+  "teardown": [
+    {"name": "断开设备", "action": "command", "command": "DISCONNECT_DEVICE",
+     "params": {"deviceMac": "AA:BB:CC:DD:EE:01"}, "optional": true}
+  ]
+}

@@ -55,6 +55,7 @@ public class CommandDispatcherTest {
         pollResultChain = mock(com.longcheer.agent.poll.PollResultChain.class);
         fileTransferManager = mock(com.longcheer.agent.transfer.FileTransferManager.class);
         when(config.getMaxSlots()).thenReturn(3);
+        when(config.getCommandTtlMs()).thenReturn(300000L);
 
         dispatcher = new CommandDispatcherImpl(bleCentralManager, deviceRegistry,
                 connectionScheduler, pollingScheduler, stateReporter, config, pollResultChain,
@@ -81,7 +82,8 @@ public class CommandDispatcherTest {
     }
 
     @Test
-    public void testReadCharQueuesCommand() {
+    public void testReadCharQueuesCommandWithoutImmediateAck() {
+        // §7.4 第 8 步：ACK 语义为"执行结果"，入队不应答；执行完成才回 CMD_ACK。
         DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.READY);
         when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);
 
@@ -99,11 +101,15 @@ public class CommandDispatcherTest {
         assertEquals("AA:BB:CC:DD:EE:FF", captor.getValue().getDeviceMac());
         assertEquals("req-2", captor.getValue().getRequestId());
         assertEquals(GattCommand.Type.READ, captor.getValue().getType());
-        verify(stateReporter).reportCommandAck("req-2", 0, "queued");
+        // §7.4.1：命令携带 TTL（commandTtlMs），过期由执行侧丢弃并回 3002。
+        assertEquals(captor.getValue().getEnqueueTime() + 300000L,
+                captor.getValue().getExpireTime());
+        // 不再有入队即应答的 "queued" ACK（真机联调暴露的 bug）。
+        verify(stateReporter, never()).reportCommandAck(eq("req-2"), anyInt(), any());
     }
 
     @Test
-    public void testWriteCharQueuesCommand() {
+    public void testWriteCharQueuesCommandWithoutImmediateAck() {
         DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.READY);
         when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);
 
@@ -120,7 +126,26 @@ public class CommandDispatcherTest {
         verify(controller).enqueueCommand(captor.capture());
         assertEquals(GattCommand.Type.WRITE, captor.getValue().getType());
         assertNotNull(captor.getValue().getPayload());
-        verify(stateReporter).reportCommandAck("req-3", 0, "queued");
+        verify(stateReporter, never()).reportCommandAck(eq("req-3"), anyInt(), any());
+    }
+
+    @Test
+    public void testReadCharQueueFullReturns3001() {
+        // §7.4.1：队列满 → 立即回 3001 QUEUE_FULL，不入队、不悬挂 requestId。
+        DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.READY);
+        when(controller.enqueueCommand(any())).thenReturn(false);
+        when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);
+
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "READ_CHAR");
+        cmd.put("requestId", "req-qf");
+        cmd.put("deviceMac", "AA:BB:CC:DD:EE:FF");
+        cmd.put("char", "2A19");
+
+        dispatcher.dispatch(cmd);
+
+        verify(stateReporter).reportCommandAck("req-qf", 3001, "queue full");
+        verify(connectionScheduler, never()).requestSlot(any());
     }
 
     @Test
@@ -238,7 +263,7 @@ public class CommandDispatcherTest {
 
     @Test
     public void testReadCharToOfflineDeviceRequestsSlot() {
-        // §7.4：设备未连接时命令入队并申请连接槽（HIGH）。
+        // §7.4：设备未连接时命令入队并申请连接槽（HIGH）；ACK 延迟到执行完成（不在入队时应答）。
         DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.REGISTERED);
         when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);
 
@@ -252,7 +277,7 @@ public class CommandDispatcherTest {
 
         verify(controller).enqueueCommand(any());
         verify(connectionScheduler).requestSlot(any());
-        verify(stateReporter).reportCommandAck("req-10", 0, "queued");
+        verify(stateReporter, never()).reportCommandAck(eq("req-10"), anyInt(), any());
     }
 
     @Test
@@ -465,6 +490,7 @@ public class CommandDispatcherTest {
         when(controller.snapshot()).thenReturn(info);
         when(controller.getState()).thenReturn(state);
         when(controller.isReady()).thenReturn(state == DeviceState.READY);
+        when(controller.enqueueCommand(any())).thenReturn(true);
         return controller;
     }
 }

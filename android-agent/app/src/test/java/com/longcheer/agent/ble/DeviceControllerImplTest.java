@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -76,6 +77,23 @@ public class DeviceControllerImplTest {
 
         assertEquals(2, drained.size());
         assertTrue(c.snapshot().getPendingCommands().isEmpty());
+    }
+
+    @Test
+    public void enqueueCommandRejectedWhenQueueFullOrTerminated() {
+        // §7.4.1：队列满 → 拒绝受理（调用方回 3001）；TERMINATED 同样拒绝。
+        DeviceControllerImpl c = newController();
+        c.snapshot().setMaxPendingCommands(1);
+        assertTrue(c.enqueueCommand(GattCommand.simple(MAC, "r1", GattCommand.Type.READ, null,
+                CHAR, null, GattCommand.Priority.HIGH)));
+        assertFalse(c.enqueueCommand(GattCommand.simple(MAC, "r2", GattCommand.Type.READ, null,
+                CHAR, null, GattCommand.Priority.HIGH)));
+        assertEquals(1, c.snapshot().getPendingCommands().size());
+
+        DeviceControllerImpl t = newController();
+        t.terminate();
+        assertFalse(t.enqueueCommand(GattCommand.simple(MAC, "r3", GattCommand.Type.READ, null,
+                CHAR, null, GattCommand.Priority.HIGH)));
     }
 
     @Test

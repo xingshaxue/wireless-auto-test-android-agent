@@ -265,15 +265,51 @@ public class PollingSchedulerImpl implements PollingScheduler, GattExecutorImpl.
         if (command.getRequestId() == null) {
             return; // 本地自治动作（规则触发）无 requestId
         }
+        if (result.isExpired()) {
+            // §7.4.1：TTL 过期未执行 → 3002 COMMAND_EXPIRED。
+            stateReporter.reportCommandAck(command.getRequestId(), 3002, "command expired");
+            return;
+        }
         if (result.isSuccess()) {
             Map<String, Object> ack = new HashMap<>();
             if (command.getType() == GattCommand.Type.READ && result.getValue() != null) {
-                ack.put("value", java.util.Base64.getEncoder().encodeToString(result.getValue()));
+                byte[] value = result.getValue();
+                ack.put("value", java.util.Base64.getEncoder().encodeToString(value));
+                ack.put("valueHex", com.longcheer.agent.poll.Decoder.toHex(value));
+                // fields 映射命中该 char 时附带 decoded 字段值（§A.3），未命中省略。
+                Object decoded = decodeSingleField(command.getDeviceMac(),
+                        command.getCharUuid(), value);
+                if (decoded != null) {
+                    ack.put("decoded", decoded);
+                }
+            } else if (command.getType() == GattCommand.Type.WRITE) {
+                ack.put("written", true);
             }
             stateReporter.reportCommandAck(command.getRequestId(), 0, ack);
         } else {
             stateReporter.reportCommandAck(command.getRequestId(), 1001, result.getStatus(), null);
         }
+    }
+
+    /**
+     * 单特征读值按设备 fields 映射解码（复用轮询处理链 Decoder，§7.3.2/§8.9）：
+     * 命中映射返回字段值；未命中（Decoder 回退 "char:<uuid>" 键）或解析失败返回 null。
+     */
+    private Object decodeSingleField(String mac, UUID charUuid, byte[] value) {
+        if (charUuid == null) {
+            return null;
+        }
+        Map<String, Object> fields = resultChain.decode(mac,
+                java.util.Collections.singletonMap(charUuid, value));
+        if (fields == null) {
+            return null;
+        }
+        for (Map.Entry<String, Object> e : fields.entrySet()) {
+            if (!e.getKey().startsWith("char:")) {
+                return e.getValue();
+            }
+        }
+        return null;
     }
 
     @Override

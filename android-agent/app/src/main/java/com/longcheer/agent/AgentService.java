@@ -1008,8 +1008,9 @@ public class AgentService extends Service {
         }
 
         @Override
-        public void enqueueCommand(com.longcheer.agent.model.GattCommand cmd) {
+        public boolean enqueueCommand(com.longcheer.agent.model.GattCommand cmd) {
             // no-op
+            return true;
         }
 
         @Override

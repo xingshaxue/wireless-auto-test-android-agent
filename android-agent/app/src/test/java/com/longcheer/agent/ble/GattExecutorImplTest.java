@@ -163,4 +163,49 @@ public class GattExecutorImplTest {
 
         assertEquals(1001, lastErrorCode); // 超时中止
     }
+
+    // ---------- 命令 TTL 背压（§7.4.1） ----------
+
+    private GattResult lastCommandResult;
+
+    private GattExecutorImpl capturingExecutor(GattTransport t) {
+        return new GattExecutorImpl(t, new GattExecutorImpl.TaskCallback() {
+            @Override
+            public void onTaskResult(String deviceMac, Map<UUID, byte[]> results,
+                                     int errorCode, int rawStatus) {
+            }
+
+            @Override
+            public void onCommandResult(GattCommand command, GattResult result) {
+                lastCommandResult = result;
+            }
+        }, () -> now[0]);
+    }
+
+    @Test
+    public void testExpiredCommandDroppedWithoutGattExecution() {
+        // §7.4.1：TTL 过期未执行 → 丢弃（不上 GATT），结果标记 expired 供 ACK 侧回 3002。
+        now[0] = 1000L;
+        GattCommand cmd = GattCommand.simple(MAC, "req-e1", GattCommand.Type.READ,
+                null, CHAR_A, null, GattCommand.Priority.HIGH);
+        cmd.expireTime = 500L; // 已过期
+
+        capturingExecutor(transport).runCommand(cmd);
+
+        assertEquals(0, transport.calls.size());
+        assertTrue(lastCommandResult != null && lastCommandResult.isExpired());
+    }
+
+    @Test
+    public void testCommandWithinTtlExecutes() {
+        now[0] = 100L;
+        GattCommand cmd = GattCommand.simple(MAC, "req-e2", GattCommand.Type.READ,
+                null, CHAR_A, null, GattCommand.Priority.HIGH);
+        cmd.expireTime = 1000L; // 未过期
+
+        capturingExecutor(transport).runCommand(cmd);
+
+        assertEquals(1, transport.calls.size());
+        assertTrue(lastCommandResult != null && lastCommandResult.isSuccess());
+    }
 }

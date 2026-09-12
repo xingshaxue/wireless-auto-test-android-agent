@@ -425,15 +425,15 @@ public class DeviceControllerImpl implements DeviceController {
     // ==================== 队列与配置 ====================
 
     @Override
-    public void enqueueCommand(GattCommand cmd) {
+    public boolean enqueueCommand(GattCommand cmd) {
         boolean executeNow;
         synchronized (lock) {
             if (info.getState() == DeviceState.TERMINATED) {
-                return;
+                return false;
             }
             if (info.getPendingCommands().size() >= info.getMaxPendingCommands()) {
-                // TODO M1: 通过 StateReporter 回 3001 QUEUE_FULL。
-                return;
+                // §7.4.1：队列满不入队，由调用方立即回 3001 QUEUE_FULL。
+                return false;
             }
             info.getPendingCommands().offer(cmd);
             if (info.getState() == DeviceState.REGISTERED || info.getState() == DeviceState.DISCONNECTED) {
@@ -445,6 +445,7 @@ public class DeviceControllerImpl implements DeviceController {
         if (executeNow) {
             drainPendingTasks();
         }
+        return true;
     }
 
     @Override

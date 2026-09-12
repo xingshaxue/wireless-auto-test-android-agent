@@ -10,19 +10,27 @@ public final class GattResult {
     private final boolean success;
     private final byte[] value;
     private final int status;
+    /** §7.4.1：TTL 过期未执行的标记（非 GATT 结果，调用侧回 3002）。 */
+    private final boolean expired;
 
-    private GattResult(boolean success, byte[] value, int status) {
+    private GattResult(boolean success, byte[] value, int status, boolean expired) {
         this.success = success;
         this.value = value;
         this.status = status;
+        this.expired = expired;
     }
 
     public static GattResult ok(byte[] value) {
-        return new GattResult(true, value, 0);
+        return new GattResult(true, value, 0, false);
     }
 
     public static GattResult fail(int status) {
-        return new GattResult(false, null, status);
+        return new GattResult(false, null, status, false);
+    }
+
+    /** 命令 TTL 过期、未上 GATT 执行（§7.4.1 → CMD_ACK 3002）。 */
+    public static GattResult expired() {
+        return new GattResult(false, null, 0, true);
     }
 
     public boolean isSuccess() {
@@ -36,6 +44,11 @@ public final class GattResult {
     /** 底层原始 GATT status（透传用，§12.9） */
     public int getStatus() {
         return status;
+    }
+
+    /** true = 命令 TTL 过期未执行（§7.4.1），调用侧回 3002 而非 1xxx。 */
+    public boolean isExpired() {
+        return expired;
     }
 
     @Override

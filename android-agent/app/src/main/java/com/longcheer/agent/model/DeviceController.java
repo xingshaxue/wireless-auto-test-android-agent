@@ -24,7 +24,13 @@ public interface DeviceController {
 
     void onSlotReleased();
 
-    void enqueueCommand(GattCommand cmd);
+    /**
+     * 命令入队（HIGH，受背压上限约束，§7.4.1）。
+     *
+     * @return true = 已受理；false = 背压拒绝（队列满）或设备已终止，
+     *         调用方应立即回 CMD_ACK 3001，避免 requestId 悬挂
+     */
+    boolean enqueueCommand(GattCommand cmd);
 
     void enqueuePollTask(PollingTask task);
 
