@@ -324,8 +324,8 @@ public class FileTransferManager {
         }
         pollingScheduler.suspendPolling(mac);   // 传输期间暂停轮询（§7.6）
         connectionScheduler.pin(mac, "FILE_TRANSFER"); // pinned 占槽，不被时间片/抢占踢出
+        TransferAdapter adapter = null;
         try {
-            TransferAdapter adapter = null;
             while (true) {
                 if (ctx.cancelRequested) {
                     cancelTask(ctx);
@@ -337,6 +337,7 @@ public class FileTransferManager {
                         cancelTask(ctx);
                         return;
                     }
+                    closeQuietly(adapter);
                     adapter = null; // 恢复后重新建连握手
                 }
                 DeviceController controller = deviceRegistry.findByMac(mac);
@@ -366,9 +367,17 @@ public class FileTransferManager {
                 }
                 int outcome = transferWindows(ctx, adapter, controller);
                 if (outcome == 0) {
+                    // 协议级收尾校验（LC 通道 B.2：32→"320"）；失败按校验错误 4002 终止（§12.9）。
+                    try {
+                        adapter.finish(task, controller);
+                    } catch (TransferAdapter.TransferException e) {
+                        failTask(ctx, 4002, "finish verify failed: " + e.getMessage());
+                        return;
+                    }
                     completeTask(ctx);
                     return;
                 } else if (outcome == 1) {
+                    closeQuietly(adapter);
                     adapter = null; // 暂停/断线后连接已重建，必须重新握手（断点续传由 offset 保证）
                     continue;
                 } else {
@@ -376,9 +385,22 @@ public class FileTransferManager {
                 }
             }
         } finally {
+            closeQuietly(adapter);
             connectionScheduler.unpin(mac);
             pollingScheduler.resumePolling(mac);
             sessionSlots.release();
+        }
+    }
+
+    /** 释放适配器资源（幂等、不抛出）。 */
+    private static void closeQuietly(TransferAdapter adapter) {
+        if (adapter == null) {
+            return;
+        }
+        try {
+            adapter.close();
+        } catch (RuntimeException e) {
+            AgentLog.w(TAG, "adapter close failed: " + e.getMessage());
         }
     }
 

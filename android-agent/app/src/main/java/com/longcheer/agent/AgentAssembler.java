@@ -161,10 +161,12 @@ public final class AgentAssembler {
                     pollingScheduler, c.stateReporter, config, transferDir,
                     (task, device) -> new com.longcheer.agent.transfer.SimulatedTransferAdapter());
         } else {
-            // DUT 传输协议适配器：真机协议（标准 OTA 或自定义）确定后实现并注入（§7.6）。
+            // DUT 传输协议适配器：LC 工厂通道（lc_proto，docs/02 通道 B；§7.6）。
+            // UnsupportedTransferAdapter 保留作兜底参考，不再装配。
             c.fileTransferManager = new FileTransferManager(c.deviceRegistry, c.connectionScheduler,
                     pollingScheduler, c.stateReporter, config, transferDir,
-                    (task, device) -> new UnsupportedTransferAdapter());
+                    (task, device) -> new com.longcheer.agent.transfer.LcProtoTransferAdapter(
+                            c.bleCentralManager, responseBus));
         }
 
         c.commandDispatcher = new CommandDispatcherImpl(c.bleCentralManager, c.deviceRegistry,

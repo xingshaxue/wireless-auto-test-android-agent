@@ -14,8 +14,9 @@ public class FileTransferTask {
     private final String fileId;
     private final long totalSize;
     private long transferredOffset;
-    private final int chunkSize;
-    private final int windowSize;
+    // 传输协议适配器可在握手时改写（LC 通道 B.3：4480B 块、窗口恒 1）。
+    private int chunkSize;
+    private int windowSize;
     private FileTransferState state;
     private final long startTime;
     private int retryCount;
@@ -40,7 +41,9 @@ public class FileTransferTask {
     public long getTransferredOffset() { return transferredOffset; }
     public void setTransferredOffset(long transferredOffset) { this.transferredOffset = transferredOffset; }
     public int getChunkSize() { return chunkSize; }
+    public void setChunkSize(int chunkSize) { this.chunkSize = chunkSize; }
     public int getWindowSize() { return windowSize; }
+    public void setWindowSize(int windowSize) { this.windowSize = windowSize; }
     public FileTransferState getState() { return state; }
     public void setState(FileTransferState state) { this.state = state; }
     public long getStartTime() { return startTime; }

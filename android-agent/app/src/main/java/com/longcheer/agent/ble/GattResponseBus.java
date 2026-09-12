@@ -6,6 +6,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * GATT 读/写响应总线：DeviceController 的 GattClient 回调把结果投进来，
@@ -49,6 +50,32 @@ public class GattResponseBus {
             }
             return false;
         });
+    }
+
+    // ==================== Notify 分接（文件传输等带外通道，§7.6） ====================
+
+    /** 原始 Notify 监听（不经轮询链解码，如 LC 工厂通道的 ASCII 回包）。 */
+    public interface NotifyListener {
+        void onNotify(String mac, UUID charUuid, byte[] value);
+    }
+
+    private final CopyOnWriteArrayList<NotifyListener> notifyListeners = new CopyOnWriteArrayList<>();
+
+    public void addNotifyListener(NotifyListener listener) {
+        if (listener != null) {
+            notifyListeners.addIfAbsent(listener);
+        }
+    }
+
+    public void removeNotifyListener(NotifyListener listener) {
+        notifyListeners.remove(listener);
+    }
+
+    /** 由 DeviceController 的 GattClient 回调注入；不影响既有 READ/WRITE 完成语义。 */
+    public void onNotify(String mac, UUID charUuid, byte[] value) {
+        for (NotifyListener listener : notifyListeners) {
+            listener.onNotify(mac, charUuid, value);
+        }
     }
 
     private void complete(String key, GattResult result) {

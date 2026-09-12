@@ -46,4 +46,19 @@ public interface TransferAdapter {
 
     /** DUT 是否支持偏移写入（决定断点续传还是从头重传）。 */
     boolean supportsOffsetWrite();
+
+    /**
+     * 数据全部确认后的协议级收尾校验（可选，默认空实现）。
+     * LC 通道 B.2：写 `32` 等 `"320"`/`"321"`；失败抛 {@link TransferException}，
+     * 引擎按校验失败终止任务（§12.9 4002）。
+     */
+    default void finish(FileTransferTask task, DeviceController device) throws TransferException {
+    }
+
+    /**
+     * 释放适配器持有的资源（如 Notify 监听注册）。会话完成/暂停废弃/失败时
+     * 由引擎调用；实现需幂等（可能多次调用）。
+     */
+    default void close() {
+    }
 }

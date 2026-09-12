@@ -289,6 +289,8 @@ public class DeviceControllerImpl implements DeviceController {
         public void onNotify(UUID charUuid, byte[] value) {
             // §7.3.3：通知进处理链（保槽与节流在链内）。
             deps.pollResultChain.onNotification(info.getMac(), charUuid, value);
+            // §7.6：带外通道（LC 文件传输等）的原始 Notify 分接。
+            deps.responseBus.onNotify(info.getMac(), charUuid, value);
         }
 
         @Override
