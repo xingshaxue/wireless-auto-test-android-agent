@@ -12,7 +12,6 @@ public final class StartParams {
 
     public static final String KEY_SERVER_HOST = "server_host";
     public static final String KEY_SERVER_PORT = "server_port";
-    public static final String KEY_TOKEN = "token";
     public static final String KEY_DEVICE_ID = "device_id";
     public static final String KEY_SIMULATE_DUT = "simulateDut";
     public static final String KEY_AUTO_START = "auto_start";
@@ -22,23 +21,21 @@ public final class StartParams {
 
     public final String serverHost;
     public final int serverPort;
-    public final String token;
     public final String deviceId;
     public final boolean simulateDut;
     public final boolean autoStart;
 
-    public StartParams(String serverHost, int serverPort, String token, String deviceId,
+    public StartParams(String serverHost, int serverPort, String deviceId,
                        boolean simulateDut, boolean autoStart) {
         this.serverHost = serverHost;
         this.serverPort = serverPort;
-        this.token = token;
         this.deviceId = deviceId;
         this.simulateDut = simulateDut;
         this.autoStart = autoStart;
     }
 
     public static StartParams defaults() {
-        return new StartParams(DEFAULT_HOST, DEFAULT_PORT, "", "", false, false);
+        return new StartParams(DEFAULT_HOST, DEFAULT_PORT, "", false, false);
     }
 
     /**
@@ -54,11 +51,10 @@ public final class StartParams {
         String host = firstNonEmpty(e.get(KEY_SERVER_HOST), s.get(KEY_SERVER_HOST), DEFAULT_HOST);
         int port = parseInt(firstNonEmpty(e.get(KEY_SERVER_PORT), s.get(KEY_SERVER_PORT), null),
                 DEFAULT_PORT);
-        String token = firstNonEmpty(e.get(KEY_TOKEN), s.get(KEY_TOKEN), "");
         String deviceId = firstNonEmpty(e.get(KEY_DEVICE_ID), s.get(KEY_DEVICE_ID), "");
         boolean simulate = parseBool(firstNonEmpty(e.get(KEY_SIMULATE_DUT), s.get(KEY_SIMULATE_DUT), null));
         boolean autoStart = parseBool(firstNonEmpty(e.get(KEY_AUTO_START), s.get(KEY_AUTO_START), null));
-        return new StartParams(host, port, token, deviceId, simulate, autoStart);
+        return new StartParams(host, port, deviceId, simulate, autoStart);
     }
 
     /** 序列化为可持久化的字符串映射。 */
@@ -66,7 +62,6 @@ public final class StartParams {
         Map<String, String> m = new HashMap<>();
         m.put(KEY_SERVER_HOST, serverHost);
         m.put(KEY_SERVER_PORT, String.valueOf(serverPort));
-        m.put(KEY_TOKEN, token);
         m.put(KEY_DEVICE_ID, deviceId);
         m.put(KEY_SIMULATE_DUT, String.valueOf(simulateDut));
         m.put(KEY_AUTO_START, String.valueOf(autoStart));

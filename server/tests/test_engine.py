@@ -77,11 +77,9 @@ async def runtime():
     settings = Settings()
     settings.gateway.host = "127.0.0.1"
     settings.gateway.port = 0
-    settings.gateway.agent_token = "gw-token"
     settings.gateway.ack_timeout_ms = 1000
     settings.api.host = "127.0.0.1"
     settings.api.port = 0
-    settings.api.token = "api-token"
     settings.storage.db_path = ":memory:"
     rt = Runtime(settings)
     await rt.start()
@@ -95,7 +93,7 @@ async def agent(runtime):
     await a.send({
         "type": "REGISTER", "timestamp": 1, "deviceId": AGENT,
         "ip": "10.0.0.1", "port": 0, "androidSdk": 34, "bleSupported": True,
-        "maxConnections": 5, "agentVersion": "1.0", "token": "gw-token",
+        "maxConnections": 5, "agentVersion": "1.0",
     })
     ack = await a.recv_json()
     assert ack["type"] == "REGISTER_ACK" and ack["errorCode"] == 0

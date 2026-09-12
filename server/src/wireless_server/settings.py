@@ -1,7 +1,7 @@
 """服务器配置：TOML 文件（stdlib tomllib）+ pydantic 校验。
 
-样例见 deploy/server.toml.example。所有字段有默认值，生产部署必须显式设置
-gateway.agent_token 与 api.token。
+样例见 deploy/server.toml.example。所有字段有默认值。本系统纯内网运行，
+无任何鉴权；旧配置中残留的 token 键按未知字段忽略（pydantic 默认行为）。
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field
 class GatewaySettings(BaseModel):
     host: str = "0.0.0.0"
     port: int = 10086
-    agent_token: str = "change-me"  # REGISTER 鉴权（SDD §11.2），生产必须修改
     tls_cert: str = ""  # 可选；配置后启用 TLS，握手失败不降级
     tls_key: str = ""
     write_queue_max: int = 1000  # 每 session 写队列上限，超限断开（背压）
@@ -28,7 +27,6 @@ class GatewaySettings(BaseModel):
 class ApiSettings(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8080
-    token: str = "change-me-api"  # REST/WS Bearer 鉴权，生产必须修改
     tls_cert: str = ""
     tls_key: str = ""
 

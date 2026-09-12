@@ -82,7 +82,7 @@ def _register_msg() -> dict:
     return {
         "type": "REGISTER", "timestamp": 1, "deviceId": AGENT,
         "ip": "10.0.0.1", "port": 0, "androidSdk": 34, "bleSupported": True,
-        "maxConnections": 5, "agentVersion": "1.0", "token": "gw-token",
+        "maxConnections": 5, "agentVersion": "1.0",
     }
 
 
@@ -98,7 +98,6 @@ def _make_settings(tmp_path) -> Settings:
     settings = Settings()
     settings.gateway.host = "127.0.0.1"
     settings.gateway.port = 0
-    settings.gateway.agent_token = "gw-token"
     settings.gateway.ack_timeout_ms = 60000  # 测试内 agent 均回 ACK，不触发重发
     settings.api.host = "127.0.0.1"
     settings.api.port = 0

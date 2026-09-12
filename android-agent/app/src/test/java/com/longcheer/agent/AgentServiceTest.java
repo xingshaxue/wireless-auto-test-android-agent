@@ -69,7 +69,6 @@ public class AgentServiceTest {
     public void startExtrasAreDefined() {
         assertEquals("server_host", AgentService.EXTRA_SERVER_HOST);
         assertEquals("server_port", AgentService.EXTRA_SERVER_PORT);
-        assertEquals("token", AgentService.EXTRA_TOKEN);
         assertEquals("device_id", AgentService.EXTRA_DEVICE_ID);
     }
 

@@ -1,18 +1,10 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { useAuthStore } from '../stores/auth'
+import { useRoute } from 'vue-router'
 
 const route = useRoute()
-const router = useRouter()
-const auth = useAuthStore()
 
 const activeMenu = computed(() => route.path)
-
-function logout() {
-  auth.clearToken()
-  router.push('/login')
-}
 </script>
 
 <template>
@@ -31,12 +23,6 @@ function logout() {
     <el-container>
       <el-header class="header">
         <span class="title">无线自动化测试控制台</span>
-        <div class="header-right">
-          <el-tag :type="auth.isLoggedIn ? 'success' : 'danger'" size="small">
-            {{ auth.isLoggedIn ? 'Token 已配置' : 'Token 缺失' }}
-          </el-tag>
-          <el-button size="small" @click="logout">退出登录</el-button>
-        </div>
       </el-header>
       <el-main class="main">
         <router-view />
@@ -75,11 +61,6 @@ function logout() {
 .title {
   font-size: 16px;
   font-weight: 600;
-}
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
 }
 .main {
   background: var(--el-fill-color-lighter);

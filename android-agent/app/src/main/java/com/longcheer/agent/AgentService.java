@@ -85,8 +85,6 @@ public class AgentService extends Service {
     public static final String EXTRA_SERVER_HOST = "server_host";
     /** 服务器端口 Intent extra（可选，默认 10086）。 */
     public static final String EXTRA_SERVER_PORT = "server_port";
-    /** 注册认证 token Intent extra。 */
-    public static final String EXTRA_TOKEN = "token";
     /** 手机业务 deviceId Intent extra（可选，默认使用 ANDROID_ID）。 */
     public static final String EXTRA_DEVICE_ID = "device_id";
 
@@ -118,7 +116,6 @@ public class AgentService extends Service {
     // 启动参数
     private String serverHost = "127.0.0.1";
     private int serverPort = 10086;
-    private String token = "";
     private String deviceId = "";
     private boolean simulateDut = false;
     /** 启动参数是否已解析（onStartCommand 或 bind 路径兜底解析后置 true）。 */
@@ -370,9 +367,6 @@ public class AgentService extends Service {
                 extras.put(StartParams.KEY_SERVER_PORT,
                         String.valueOf(intent.getIntExtra(EXTRA_SERVER_PORT, 0)));
             }
-            if (intent.hasExtra(EXTRA_TOKEN)) {
-                extras.put(StartParams.KEY_TOKEN, intent.getStringExtra(EXTRA_TOKEN));
-            }
             if (intent.hasExtra(EXTRA_DEVICE_ID)) {
                 extras.put(StartParams.KEY_DEVICE_ID, intent.getStringExtra(EXTRA_DEVICE_ID));
             }
@@ -384,7 +378,7 @@ public class AgentService extends Service {
         android.content.SharedPreferences prefs = getSharedPreferences("agent_prefs", MODE_PRIVATE);
         Map<String, String> stored = new HashMap<>();
         for (String key : new String[]{StartParams.KEY_SERVER_HOST, StartParams.KEY_SERVER_PORT,
-                StartParams.KEY_TOKEN, StartParams.KEY_DEVICE_ID}) {
+                StartParams.KEY_DEVICE_ID}) {
             String v = prefs.getString(key, null);
             if (v != null) {
                 stored.put(key, v);
@@ -416,7 +410,6 @@ public class AgentService extends Service {
 
         serverHost = params.serverHost;
         serverPort = params.serverPort;
-        token = params.token;
         simulateDut = params.simulateDut;
         deviceId = params.deviceId;
         if (deviceId == null || deviceId.isEmpty()) {
@@ -449,7 +442,6 @@ public class AgentService extends Service {
         payload.put("bleSupported", isBleSupported());
         payload.put("maxConnections", bleCentralManager.supportedMaxConnections());
         payload.put("agentVersion", DEFAULT_AGENT_VERSION);
-        payload.put("token", token == null ? "" : token);
         // §13：崩溃日志下次启动随注册上报（可选标记字段，服务器可忽略；文件本体经 UPLOAD_LOG 上传）。
         payload.put("hasCrashLog", hasCrashLogs());
         return payload;
@@ -931,7 +923,7 @@ public class AgentService extends Service {
 
         @Override
         public void sendJson(Map<String, Object> msg) {
-            // §11.3 脱敏：报文可能携带 token/敏感载荷，只记类型不记内容。
+            // §11.3 脱敏：报文可能携带敏感载荷，只记类型不记内容。
             Log.d(TAG, "StubTcpClient.sendJson type=" + (msg == null ? null : msg.get("type")));
         }
 
@@ -1329,7 +1321,7 @@ public class AgentService extends Service {
     private static class StubStateReporter implements StateReporter {
         @Override
         public void report(String event, Map<String, Object> payload) {
-            // §11.3 脱敏：只记事件名，不记 payload（可能含 token/敏感字段）。
+            // §11.3 脱敏：只记事件名，不记 payload（可能含敏感字段）。
             Log.d(TAG, "StubStateReporter.report " + event);
         }
 

@@ -19,7 +19,6 @@ public class StartParamsTest {
         StartParams p = StartParams.resolve(null, null);
         assertEquals(StartParams.DEFAULT_HOST, p.serverHost);
         assertEquals(StartParams.DEFAULT_PORT, p.serverPort);
-        assertEquals("", p.token);
         assertFalse(p.simulateDut);
         assertFalse(p.autoStart);
         assertFalse(p.isConfigured()); // 默认回环不算已配置
@@ -30,7 +29,7 @@ public class StartParamsTest {
         Map<String, String> stored = new HashMap<>();
         stored.put(StartParams.KEY_SERVER_HOST, "10.0.0.5");
         stored.put(StartParams.KEY_SERVER_PORT, "20000");
-        stored.put(StartParams.KEY_TOKEN, "stored-token");
+        stored.put(StartParams.KEY_DEVICE_ID, "stored-device");
 
         Map<String, String> extras = new HashMap<>();
         extras.put(StartParams.KEY_SERVER_HOST, "192.168.1.10");
@@ -38,7 +37,7 @@ public class StartParamsTest {
         StartParams p = StartParams.resolve(extras, stored);
         assertEquals("192.168.1.10", p.serverHost); // extras 优先
         assertEquals(20000, p.serverPort);          // 无 extra → 用已存
-        assertEquals("stored-token", p.token);
+        assertEquals("stored-device", p.deviceId);
         assertTrue(p.isConfigured());
     }
 
@@ -65,11 +64,10 @@ public class StartParamsTest {
 
     @Test
     public void toMapRoundTrips() {
-        StartParams original = new StartParams("10.1.2.3", 9999, "tk", "phone-7", true, true);
+        StartParams original = new StartParams("10.1.2.3", 9999, "phone-7", true, true);
         StartParams restored = StartParams.resolve(null, original.toMap());
         assertEquals(original.serverHost, restored.serverHost);
         assertEquals(original.serverPort, restored.serverPort);
-        assertEquals(original.token, restored.token);
         assertEquals(original.deviceId, restored.deviceId);
         assertEquals(original.simulateDut, restored.simulateDut);
         assertEquals(original.autoStart, restored.autoStart);

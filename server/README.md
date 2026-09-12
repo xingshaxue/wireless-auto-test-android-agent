@@ -12,7 +12,7 @@
 ```
 
 - 网关与 agent 之间的报文格式、二进制帧协议实现 SDD V1.5 **附录 A** 与 **§16.3**；
-  REGISTER 鉴权、限流错误码等分别见 §11.2、§12.9。
+  限流错误码等见 §12.9。本系统纯内网部署，无任何鉴权。
 - 与仓库内 `tools/mock_server.py` 的关系：mock 是**联调参考实现**（单文件、交互式、
   内置示例配置），用于与 agent 跑通协议链路和协议自测（`--selftest`）；
   **本包是生产服务器**：持久化（SQLite）、配置管理、命令台账、文件传输、测试编排、
@@ -20,10 +20,10 @@
 
 ## 2. 功能清单
 
-- **多 agent 接入与心跳离线检测**：REGISTER/REGISTER_ACK 握手（§11.2），
+- **多 agent 接入与心跳离线检测**：REGISTER/REGISTER_ACK 握手，
   心跳看门狗按 `heartbeat_timeout_factor × heartbeatIntervalMs` 无消息判离线。
-- **token 鉴权**：agent 侧 REGISTER token（`gateway.agent_token`）；
-  REST/WS 侧 Bearer token（`api.token`），不符一律 401（WS 拒绝握手）。
+- **内网免鉴权**：REGISTER、REST、WS 均不校验 token；旧 agent 上报的
+  REGISTER token 字段作为历史字段保留并忽略（附录 A.3）。
 - **配置集中管理与 configVersion 发号**（§16.4）：设备配置、全局参数入库，
   注册时随 REGISTER_ACK 全量下发；运行中修改立即下发并等 ACK。
 - **命令台账**（§8.4 / §12.9）：按 requestId 登记、CMD_ACK 对账销账、
@@ -61,14 +61,13 @@ python3 -m venv .venv
 ## 4. 配置
 
 配置文件为 TOML，样例见 `deploy/server.toml.example`，字段与默认值一一对应
-`src/wireless_server/settings.py`。所有字段均有默认值，**但生产部署必须显式修改
-`gateway.agent_token` 与 `api.token`**（使用默认值启动时会在日志中告警）。
+`src/wireless_server/settings.py`。所有字段均有默认值。纯内网部署，无任何
+鉴权；旧配置文件中残留的 `gateway.agent_token` / `api.token` 键按未知字段忽略。
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
 | `gateway.host` | `0.0.0.0` | TCP 网关监听地址 |
 | `gateway.port` | `10086` | TCP 网关端口（agent 连接） |
-| `gateway.agent_token` | `change-me` | REGISTER 鉴权 token（§11.2），**生产必须修改** |
 | `gateway.tls_cert` / `gateway.tls_key` | `""` | 可选 TLS；配置后启用，握手失败不降级 |
 | `gateway.write_queue_max` | `1000` | 每 session 写队列上限，超限断开（背压） |
 | `gateway.ack_timeout_ms` | `30000` | CMD_ACK 等待超时 |
@@ -76,7 +75,6 @@ python3 -m venv .venv
 | `gateway.heartbeat_timeout_factor` | `3` | 超过 factor × heartbeatIntervalMs 无消息判离线 |
 | `gateway.default_heartbeat_interval_ms` | `5000` | agent 未上报时的兜底心跳间隔 |
 | `api.host` / `api.port` | `0.0.0.0` / `8080` | REST/WS 监听地址与端口 |
-| `api.token` | `change-me-api` | REST/WS Bearer token，**生产必须修改** |
 | `api.tls_cert` / `api.tls_key` | `""` | API 侧可选 TLS（uvicorn ssl_certfile/ssl_keyfile） |
 | `storage.db_path` | `data/server.db` | SQLite 数据库路径 |
 | `storage.files_dir` | `data/files` | 待下发文件登记目录 |
@@ -119,7 +117,7 @@ sudo mkdir -p /opt/wireless-server /etc/wireless-server
 sudo cp -r server/. /opt/wireless-server/
 cd /opt/wireless-server && sudo python3 -m venv .venv && sudo .venv/bin/pip install -e .
 
-# 3. 拷贝配置（修改 token 等生产参数）
+# 3. 拷贝配置（按需调整生产参数）
 sudo cp /opt/wireless-server/deploy/server.toml.example /etc/wireless-server/server.toml
 sudoedit /etc/wireless-server/server.toml
 
@@ -151,13 +149,12 @@ service 单元：`User=wireless`，`WorkingDirectory=/opt/wireless-server`，
 
 ## 6. API 参考
 
-REST 全部挂在 `/api` 前缀下，鉴权为 HTTP Bearer（token 取 `api.token`），
-不符一律 401。WebSocket 走 `/ws/events?token=...` query 参数。
+REST 全部挂在 `/api` 前缀下，**内网免鉴权**，直接调用即可（客户端残留的
+Authorization 头会被忽略）。WebSocket 走 `/ws/events`（同样免鉴权）。
 
 错误码语义（`src/wireless_server/api/routes.py` 头部约定）：
 
 - `400` — 校验/越界类 ValueError（如配额超限、参数越界）
-- `401` — Bearer token 不符
 - `404` — 设备 / 文件 / run / 任务不存在，或 agent 不在线
 - `409` — agent 不在线（设备归属 agent 离线）、同 agent 已有场景在跑、传输冲突
 - `422` — 请求体字段缺失或类型非法（FastAPI/pydantic 校验亦返回 422）
@@ -204,36 +201,35 @@ REST 全部挂在 `/api` 前缀下，鉴权为 HTTP Bearer（token 取 `api.toke
 ### curl 示例
 
 ```bash
-TOKEN="your-api-token"
 BASE="http://127.0.0.1:8080"
 
 # agent 在线列表
-curl -s -H "Authorization: Bearer $TOKEN" $BASE/api/agents
+curl -s $BASE/api/agents
 
 # 下发命令并同步等 ACK
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+curl -s -X POST -H "Content-Type: application/json" \
   -d '{"type": "GET_STATUS"}' $BASE/api/commands/phone-01
 
 # 设置轮询间隔
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+curl -s -X POST -H "Content-Type: application/json" \
   -d '{"intervalMs": 5000}' $BASE/api/devices/AA:BB:CC:DD:EE:FF/polling-interval
 
 # 上传文件并发起下发
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -F "file=@firmware.bin" $BASE/api/files
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+curl -s -X POST -F "file=@firmware.bin" $BASE/api/files
+curl -s -X POST -H "Content-Type: application/json" \
   -d '{"agentId": "phone-01", "deviceMac": "AA:BB:CC:DD:EE:FF"}' \
   $BASE/api/files/file-abcd1234/transfer
 
 # 运行内置场景
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+curl -s -X POST -H "Content-Type: application/json" \
   -d '{"agentId": "phone-01", "scenario": {"path": "basic_connect_poll.json"}}' \
   $BASE/api/tests/run
 ```
 
 ### WebSocket：/ws/events
 
-纯推送的实时事件流。握手带 query：`/ws/events?token=<api.token>&type=DEVICE_STATE,POLL_RESULT`
-（`type` 可选，逗号分隔过滤；缺省推全部类型）。token 不符拒绝握手（客户端见 403）。
+纯推送的实时事件流，免鉴权。握手可带 query：`/ws/events?type=DEVICE_STATE,POLL_RESULT`
+（`type` 可选，逗号分隔过滤；缺省推全部类型）。
 推送报文格式：
 
 ```json
@@ -244,7 +240,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 
 ```bash
 # wscat
-wscat -c "ws://127.0.0.1:8080/ws/events?token=$TOKEN&type=DEVICE_STATE,POLL_RESULT"
+wscat -c "ws://127.0.0.1:8080/ws/events?type=DEVICE_STATE,POLL_RESULT"
 ```
 
 ```python
@@ -252,7 +248,7 @@ wscat -c "ws://127.0.0.1:8080/ws/events?token=$TOKEN&type=DEVICE_STATE,POLL_RESU
 import asyncio, websockets
 
 async def main():
-    url = "ws://127.0.0.1:8080/ws/events?token=your-api-token&type=POLL_RESULT"
+    url = "ws://127.0.0.1:8080/ws/events?type=POLL_RESULT"
     async with websockets.connect(url) as ws:
         async for msg in ws:
             print(msg)
@@ -379,7 +375,8 @@ GET `/api/tests/runs/{run_id}` 返回的报告（同步落库 test_runs / test_r
 agent 侧配置（详见 `android-agent/README.md`），二选一：
 
 - **控制台**：安装 APK 打开「无线测试Agent」，填服务器地址 / 端口（默认 10086）/
-  token（即 `gateway.agent_token`）/ 设备 ID → 保存配置 → 启动服务。
+  设备 ID → 保存配置 → 启动服务。（服务端已免鉴权，token 栏填任意值或留空，
+  旧版本 agent 仍会发送，服务端忽略。）
 - **ADB 拉起**（联调 / CI）：
 
 ```bash
@@ -387,7 +384,7 @@ adb shell am startservice \
   -a com.longcheer.agent.ACTION_START \
   -n com.longcheer.agent/.AgentService \
   --es server_host <服务器IP> --ei server_port 10086 \
-  --es token <agent_token> --es device_id phone-01
+  --es device_id phone-01
 # 模拟器/无蓝牙环境（虚拟 DUT 模式）：追加 --ez simulateDut true
 ```
 
@@ -400,18 +397,18 @@ adb shell am startservice \
 .venv/bin/python -m wireless_server --config server.toml
 # 3. 起 agent（控制台或上面的 am startservice）
 # 4. 确认在线
-curl -s -H "Authorization: Bearer $TOKEN" http://<服务器IP>:8080/api/agents
+curl -s http://<服务器IP>:8080/api/agents
 # 5. 跑内置场景
-curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+curl -s -X POST -H "Content-Type: application/json" \
   -d '{"agentId": "phone-01", "scenario": {"path": "basic_connect_poll.json"}}' \
   http://<服务器IP>:8080/api/tests/run
 # 6. 查报告
-curl -s -H "Authorization: Bearer $TOKEN" http://<服务器IP>:8080/api/tests/runs/<runId>
+curl -s http://<服务器IP>:8080/api/tests/runs/<runId>
 ```
 
 模拟器冒烟：`tools/emulator_smoke.sh` 目前默认指向 `tools/mock_server.py`；
 可将其中 mock 换为本服务器做等价验证（同一协议，agent 侧只需把
-server_host/server_port/token 指向本服务的 gateway 监听地址）。
+server_host/server_port 指向本服务的 gateway 监听地址）。
 
 ## 9. 测试
 
@@ -448,7 +445,7 @@ server/
 ├── src/wireless_server/
 │   ├── __main__.py               # CLI 入口（--config / --check-config）
 │   ├── settings.py               # TOML 配置 + pydantic 校验
-│   ├── runtime.py                # 装配与编排（REGISTER 鉴权、回调挂接）
+│   ├── runtime.py                # 装配与编排（REGISTER 处理、回调挂接）
 │   ├── logging_setup.py          # 日志初始化（轮转）
 │   ├── codec.py                  # 长度前缀 JSON / 0xAC42 二进制帧编解码（§16.3）
 │   ├── ingest.py                 # 事件入库 + 最后已知状态视图（A.3）

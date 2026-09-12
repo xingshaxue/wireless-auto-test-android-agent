@@ -65,7 +65,7 @@ def _register_msg() -> dict:
     return {
         "type": "REGISTER", "timestamp": 1, "deviceId": AGENT,
         "ip": "10.0.0.1", "port": 0, "androidSdk": 34, "bleSupported": True,
-        "maxConnections": 5, "agentVersion": "1.0", "token": "gw-token",
+        "maxConnections": 5, "agentVersion": "1.0",
     }
 
 
@@ -86,12 +86,10 @@ async def runtime(tmp_path):
     settings = Settings()
     settings.gateway.host = "127.0.0.1"
     settings.gateway.port = 0
-    settings.gateway.agent_token = "gw-token"
     settings.gateway.ack_timeout_ms = 300  # 504 用例快超时
     settings.gateway.ack_max_retries = 0
     settings.api.host = "127.0.0.1"
     settings.api.port = 0
-    settings.api.token = "api-token"
     settings.storage.db_path = ":memory:"
     settings.storage.files_dir = str(tmp_path / "files")
     settings.storage.logs_dir = str(tmp_path / "logs")
@@ -105,7 +103,6 @@ async def runtime(tmp_path):
 async def api(runtime):
     async with httpx.AsyncClient(
         base_url=f"http://127.0.0.1:{runtime.api_port}",
-        headers={"Authorization": "Bearer api-token"},
         trust_env=False,
     ) as client:
         yield client
@@ -136,16 +133,17 @@ async def _until(fn, timeout: float = 5.0):
         await asyncio.sleep(0.05)
 
 
-# ---------------- 鉴权 ----------------
+# ---------------- 鉴权（内网免鉴权） ----------------
 
-async def test_auth_required(runtime):
+async def test_no_auth_required(runtime):
     base = f"http://127.0.0.1:{runtime.api_port}"
     async with httpx.AsyncClient(base_url=base, trust_env=False) as anon:
-        assert (await anon.get("/api/ledger")).status_code == 401
+        assert (await anon.get("/api/ledger")).status_code == 200
+    # 残留的 Bearer 头不影响访问（忽略）
     async with httpx.AsyncClient(
             base_url=base, headers={"Authorization": "Bearer wrong"},
             trust_env=False) as bad:
-        assert (await bad.get("/api/ledger")).status_code == 401
+        assert (await bad.get("/api/ledger")).status_code == 200
 
 
 # ---------------- 台账 ----------------
@@ -420,7 +418,7 @@ def _ws_url(runtime, **params) -> str:
 
 async def test_ws_events_stream(runtime, agent):
     # proxy=None：环境里有 http_proxy，直连本地必须绕过
-    uri = _ws_url(runtime, token="api-token", type="DEVICE_STATE,POLL_RESULT")
+    uri = _ws_url(runtime, type="DEVICE_STATE,POLL_RESULT")
     async with websockets.connect(uri, proxy=None) as ws:
         # HEARTBEAT 被过滤；DEVICE_STATE 推送到达
         await agent.send({"type": "HEARTBEAT", "timestamp": 10,
@@ -436,7 +434,7 @@ async def test_ws_events_stream(runtime, agent):
 
 
 async def test_ws_events_all_types(runtime, agent):
-    uri = _ws_url(runtime, token="api-token")
+    uri = _ws_url(runtime)
     async with websockets.connect(uri, proxy=None) as ws:
         await agent.send({"type": "POLL_RESULT", "timestamp": 12,
                           "deviceMac": MAC, "stale": False,
@@ -451,13 +449,12 @@ async def test_ws_events_all_types(runtime, agent):
         assert msg["payload"]["values"]["battery"] == 66
 
 
-async def test_ws_bad_token_rejected(runtime):
-    with pytest.raises(websockets.exceptions.InvalidStatus):
-        async with websockets.connect(_ws_url(runtime, token="wrong"), proxy=None):
-            pass
-    with pytest.raises(websockets.exceptions.InvalidStatus):
-        async with websockets.connect(_ws_url(runtime), proxy=None):
-            pass
+async def test_ws_no_token_ok(runtime):
+    # 内网免鉴权：无 token 可连；残留的 token 查询参数被忽略
+    async with websockets.connect(_ws_url(runtime), proxy=None):
+        pass
+    async with websockets.connect(_ws_url(runtime, token="wrong"), proxy=None):
+        pass
 
 
 async def test_web_console_static_hosting(runtime):
@@ -475,5 +472,5 @@ async def test_web_console_static_hosting(runtime):
         assert r.status_code == 200 and "html" in r.text.lower()
         r = await client.get("/tests")  # SPA 前端路由 → 回退 index.html
         assert r.status_code == 200 and "html" in r.text.lower()
-        r = await client.get("/api/agents")  # API 无 token 仍 401，不被静态吞掉
-        assert r.status_code == 401
+        r = await client.get("/api/agents")  # API 不被静态托管吞掉
+        assert r.status_code == 200

@@ -3,7 +3,7 @@
 [gateway]
 host = "0.0.0.0"
 port = 10086
-agent_token = "change-me"          # 生产必须修改；agent 注册时校验（SDD §11.2）
+# 纯内网部署，无任何鉴权（REGISTER / REST / WS 均免 token）
 # tls_cert = "/etc/wireless/server.crt"   # 可选 TLS；启用后握手失败不降级
 # tls_key  = "/etc/wireless/server.key"
 write_queue_max = 1000
@@ -14,7 +14,7 @@ heartbeat_timeout_factor = 3
 [api]
 host = "0.0.0.0"
 port = 8080
-token = "change-me-api"            # REST/WS Bearer token，生产必须修改
+# 内网免鉴权，无需 token
 # tls_cert = ""
 # tls_key = ""
 

@@ -30,7 +30,7 @@ class Register(EventEnvelope):
     bleSupported: bool
     maxConnections: int
     agentVersion: str
-    token: str
+    token: str | None = None  # 历史字段：旧 agent 仍会发送，服务端忽略（附录 A.3）
 
 
 class Heartbeat(EventEnvelope):

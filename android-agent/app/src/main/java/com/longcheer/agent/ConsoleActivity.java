@@ -46,7 +46,6 @@ public class ConsoleActivity extends Activity {
 
     private EditText editHost;
     private EditText editPort;
-    private EditText editToken;
     private EditText editDeviceId;
     private CheckBox checkSimulateDut;
     private CheckBox checkAutoStart;
@@ -117,7 +116,6 @@ public class ConsoleActivity extends Activity {
         editHost = labeledEdit(root, "服务器地址（如 192.168.1.100）");
         editPort = labeledEdit(root, "端口（默认 10086）");
         editPort.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        editToken = labeledEdit(root, "Token");
         editDeviceId = labeledEdit(root, "设备 ID（留空自动用本机 ANDROID_ID 派生）");
 
         checkSimulateDut = new CheckBox(this);
@@ -185,7 +183,6 @@ public class ConsoleActivity extends Activity {
     private void loadPrefsIntoViews() {
         editHost.setText(prefs.getString(StartParams.KEY_SERVER_HOST, ""));
         editPort.setText(prefs.getString(StartParams.KEY_SERVER_PORT, ""));
-        editToken.setText(prefs.getString(StartParams.KEY_TOKEN, ""));
         editDeviceId.setText(prefs.getString(StartParams.KEY_DEVICE_ID, ""));
         checkSimulateDut.setChecked(prefs.getBoolean(StartParams.KEY_SIMULATE_DUT, false));
         checkAutoStart.setChecked(prefs.getBoolean(StartParams.KEY_AUTO_START, false));
@@ -195,7 +192,6 @@ public class ConsoleActivity extends Activity {
         prefs.edit()
                 .putString(StartParams.KEY_SERVER_HOST, editHost.getText().toString().trim())
                 .putString(StartParams.KEY_SERVER_PORT, editPort.getText().toString().trim())
-                .putString(StartParams.KEY_TOKEN, editToken.getText().toString().trim())
                 .putString(StartParams.KEY_DEVICE_ID, editDeviceId.getText().toString().trim())
                 .putBoolean(StartParams.KEY_SIMULATE_DUT, checkSimulateDut.isChecked())
                 .putBoolean(StartParams.KEY_AUTO_START, checkAutoStart.isChecked())

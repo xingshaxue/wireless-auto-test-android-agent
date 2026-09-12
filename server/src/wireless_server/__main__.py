@@ -25,8 +25,6 @@ def main() -> None:
 
     settings = load_settings(args.config)
     setup_logging(settings.log)
-    if settings.gateway.agent_token == "change-me" or settings.api.token == "change-me-api":
-        log.warning("使用默认 token，生产部署必须修改 gateway.agent_token 与 api.token")
     if args.check_config:
         log.info("配置校验通过")
         return

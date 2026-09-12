@@ -12,7 +12,7 @@ npm install --registry=https://registry.npmmirror.com
 npm run dev        # http://127.0.0.1:5173，/api 与 /ws 代理到 127.0.0.1:8080
 ```
 
-登录页输入 server 的 `api.token`（本地试运行配置为 `demo-api-token`）。
+内网部署免鉴权，打开即用，无需登录。
 
 ## 构建与部署
 
@@ -38,5 +38,5 @@ dist 不存在时 server 退化为纯 API 模式（日志有提示）。
 
 ## 说明
 
-- 认证：单一 API token（登录后存 localStorage），无多用户体系，限实验室/内网使用
+- 认证：内网部署免鉴权，打开即用，限实验室/内网使用
 - API 契约以 `server/src/wireless_server/api/routes.py` 为准（`src/api/types.ts` 逐字段对齐）

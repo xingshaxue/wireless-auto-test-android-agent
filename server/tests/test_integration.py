@@ -1,9 +1,10 @@
 """端到端集成测试：完整 runtime + 模拟 agent 客户端 + httpx API 调用。
 
-覆盖（SDD §7.1 / §8.4 / §11.2 / §16.4）：
-REGISTER 错 token 拒绝 → 正确注册（configVersion=1，含 devices）→ HEARTBEAT
-上线 → DEVICE_STATE/POLL_RESULT 入库与视图 → POST /api/commands 下发 +
-CMD_ACK 对账 → 二次注册 configVersion 递增 → API 鉴权 401。
+覆盖（SDD §7.1 / §8.4 / §16.4）：
+REGISTER 任意 token 均接受（旧 agent 残留 token 字段忽略）→ 注册
+（configVersion=1，含 devices）→ HEARTBEAT 上线 → DEVICE_STATE/POLL_RESULT
+入库与视图 → POST /api/commands 下发 + CMD_ACK 对账 → 二次注册 configVersion
+递增 → API 免鉴权。
 """
 
 import asyncio
@@ -67,11 +68,11 @@ class FakeAgent:
             pass
 
 
-def _register_msg(token: str) -> dict:
+def _register_msg() -> dict:
     return {
         "type": "REGISTER", "timestamp": 1, "deviceId": AGENT,
         "ip": "10.0.0.1", "port": 0, "androidSdk": 34, "bleSupported": True,
-        "maxConnections": 5, "agentVersion": "1.0", "token": token,
+        "maxConnections": 5, "agentVersion": "1.0",
     }
 
 
@@ -92,11 +93,9 @@ async def runtime():
     settings = Settings()
     settings.gateway.host = "127.0.0.1"
     settings.gateway.port = 0
-    settings.gateway.agent_token = "gw-token"
     settings.gateway.ack_timeout_ms = 1000
     settings.api.host = "127.0.0.1"
     settings.api.port = 0
-    settings.api.token = "api-token"
     settings.storage.db_path = ":memory:"
     rt = Runtime(settings)
     await rt.start()
@@ -108,7 +107,6 @@ async def runtime():
 async def api(runtime):
     async with httpx.AsyncClient(
         base_url=f"http://127.0.0.1:{runtime.api_port}",
-        headers={"Authorization": "Bearer api-token"},
         trust_env=False,  # 不走环境代理，直连本地
     ) as client:
         yield client
@@ -126,13 +124,22 @@ async def _until(fn, timeout: float = 5.0):
         await asyncio.sleep(0.05)
 
 
-async def test_register_wrong_token_rejected(runtime):
+async def test_register_any_token_accepted(runtime):
+    # 内网免鉴权：无 token 注册成功
     agent = await FakeAgent.connect(runtime.gateway_port)
-    await agent.send(_register_msg("bad-token"))
+    await agent.send(_register_msg())
     ack = await agent.recv_json()
-    assert ack["type"] == "REGISTER_ACK" and ack["errorCode"] == 2001
-    await agent.read_eof()  # 拒绝后服务器断开
+    assert ack["type"] == "REGISTER_ACK" and ack["errorCode"] == 0
     await agent.close()
+
+    # 旧 agent 残留 token 字段（含错误值）同样接受
+    agent2 = await FakeAgent.connect(runtime.gateway_port)
+    msg = _register_msg()
+    msg["token"] = "bad-token"
+    await agent2.send(msg)
+    ack2 = await agent2.recv_json()
+    assert ack2["type"] == "REGISTER_ACK" and ack2["errorCode"] == 0
+    await agent2.close()
 
 
 async def test_full_flow(runtime, api):
@@ -140,9 +147,9 @@ async def test_full_flow(runtime, api):
     r = await api.put("/api/devices", json=_device())
     assert r.status_code == 200, r.text
 
-    # ---- REGISTER：正确 token → REGISTER_ACK 含 configVersion=1 与 devices ----
+    # ---- REGISTER → REGISTER_ACK 含 configVersion=1 与 devices ----
     agent = await FakeAgent.connect(runtime.gateway_port)
-    await agent.send(_register_msg("gw-token"))
+    await agent.send(_register_msg())
     ack = await agent.recv_json()
     assert ack["type"] == "REGISTER_ACK" and ack["errorCode"] == 0
     config = ack["config"]
@@ -196,7 +203,7 @@ async def test_full_flow(runtime, api):
 
     # ---- 二次注册（重连踢旧连接）→ configVersion 递增为 2 ----
     agent2 = await FakeAgent.connect(runtime.gateway_port)
-    await agent2.send(_register_msg("gw-token"))
+    await agent2.send(_register_msg())
     ack2 = await agent2.recv_json()
     assert ack2["config"]["configVersion"] == 2
     await agent.read_eof()  # 旧连接被踢
@@ -220,16 +227,17 @@ async def _get_events(api: httpx.AsyncClient, want: int):
     return rows if len(rows) >= want else None
 
 
-async def test_api_auth_required(runtime):
+async def test_api_no_auth_required(runtime):
+    # 内网免鉴权：无 token 200；残留 Bearer 头被忽略
     async with httpx.AsyncClient(
             base_url=f"http://127.0.0.1:{runtime.api_port}",
             trust_env=False) as anon:
-        assert (await anon.get("/api/agents")).status_code == 401
+        assert (await anon.get("/api/agents")).status_code == 200
         bad = httpx.AsyncClient(
             base_url=f"http://127.0.0.1:{runtime.api_port}",
             headers={"Authorization": "Bearer wrong"},
             trust_env=False)
-        assert (await bad.get("/api/agents")).status_code == 401
+        assert (await bad.get("/api/agents")).status_code == 200
         await bad.aclose()
 
 

@@ -15,7 +15,7 @@ gradle :app:testDebugUnitTest      # 全部单元测试
 ### 脱网独立运营（测试机不连电脑）
 
 1. 安装 APK 后，桌面出现「无线测试Agent」图标（控制台）；
-2. 打开控制台：填服务器地址/端口/token/设备 ID（留空自动派生）→ 「保存配置」；
+2. 打开控制台：填服务器地址/端口/设备 ID（留空自动派生）→ 「保存配置」；
 3. 按引导完成「蓝牙权限」与「省电白名单」授权；
 4. 「启动服务」；需要时打开「开机自动启动服务」开关（重启后自动拉起，Android 12+ 支持）；
 5. 控制台状态区实时显示 TCP 连接、设备数、READY 数与最近日志。
@@ -27,7 +27,7 @@ adb shell am startservice \
   -a com.longcheer.agent.ACTION_START \
   -n com.longcheer.agent/.AgentService \
   --es server_host <IP> --ei server_port 10086 \
-  --es token <token> --es device_id phone-01
+  --es device_id phone-01
 # 模拟器/无蓝牙环境（虚拟 DUT 模式）：追加 --ez simulateDut true
 ```
 

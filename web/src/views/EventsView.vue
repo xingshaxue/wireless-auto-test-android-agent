@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useAuthStore } from '../stores/auth'
 import type { WsEvent } from '../api/types'
 
 // 与 server/src/wireless_server/protocol/events.py 一致的事件类型
@@ -16,8 +15,6 @@ const MAX_ROWS = 1000
 const FLUSH_INTERVAL_MS = 200
 const RECONNECT_MIN_MS = 1000
 const RECONNECT_MAX_MS = 30000
-
-const auth = useAuthStore()
 
 const connected = ref(false)
 const paused = ref(false)
@@ -36,11 +33,12 @@ const wsStatusText = computed(() => (connected.value ? '已连接' : '未连接'
 
 function wsUrl(): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const params = new URLSearchParams({ token: auth.token })
+  const params = new URLSearchParams()
   if (typeFilter.value.length > 0) {
     params.set('type', typeFilter.value.join(','))
   }
-  return `${proto}//${location.host}/ws/events?${params.toString()}`
+  const query = params.toString()
+  return `${proto}//${location.host}/ws/events${query ? `?${query}` : ''}`
 }
 
 function connect() {

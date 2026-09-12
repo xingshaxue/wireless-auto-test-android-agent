@@ -121,14 +121,7 @@ class Runtime:
             await self.ingest.handle_event(session.agent_id, raw)
 
     async def _handle_register(self, session: AgentSession, raw: dict) -> None:
-        # token 鉴权（§11.2）：不符回 2xxx 协议错误并断开
-        if raw.get("token") != self.settings.gateway.agent_token:
-            logger.warning("session %s REGISTER token 校验失败，拒绝", session.session_id)
-            await session.send_json(build_command(
-                "REGISTER_ACK", errorCode=int(ProtocolErrorCode.BAD_MESSAGE)
-            ).to_wire())
-            await session.close(flush=True)  # 先把拒绝回包发出去再断开
-            return
+        # 内网部署，REGISTER 不做 token 鉴权；旧 agent 携带的 token 字段忽略
         agent_id = raw.get("deviceId")
         if not agent_id:
             await session.send_json(build_command(

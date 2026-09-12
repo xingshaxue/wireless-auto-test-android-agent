@@ -194,6 +194,14 @@ def test_parse_register():
     assert _roundtrip(raw) == raw
 
 
+def test_parse_register_without_token():
+    # token 已改为可选历史字段（A.3）：新 agent 不再携带
+    raw = {"type": "REGISTER", "timestamp": 1, "deviceId": "phone-1",
+           "ip": "192.168.1.2", "port": 10086, "androidSdk": 34,
+           "bleSupported": True, "maxConnections": 5, "agentVersion": "1.0"}
+    assert _roundtrip(raw) == raw
+
+
 def test_parse_heartbeat():
     raw = {"type": "HEARTBEAT", "timestamp": 1, "cpuPercent": 12, "memAvailMb": 512,
            "slotsUsed": 2, "slotsTotal": 3, "devicesManaged": 10, "devicesReady": 8}

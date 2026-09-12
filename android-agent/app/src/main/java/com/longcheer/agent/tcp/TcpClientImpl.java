@@ -234,7 +234,7 @@ public class TcpClientImpl implements TcpClient {
         this.listener = listener;
     }
 
-    /** 启用/关闭 TLS（§11.2 可选；默认内网明文 + token）。 */
+    /** 启用/关闭 TLS（§11.2 可选；默认内网明文）。 */
     public void setTlsEnabled(boolean enabled) {
         this.tlsEnabled = enabled;
     }

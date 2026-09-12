@@ -30,7 +30,7 @@ public class BootReceiver extends BroadcastReceiver {
         SharedPreferences prefs = context.getSharedPreferences("agent_prefs", Context.MODE_PRIVATE);
         Map<String, String> stored = new HashMap<>();
         for (String key : new String[]{StartParams.KEY_SERVER_HOST, StartParams.KEY_SERVER_PORT,
-                StartParams.KEY_TOKEN, StartParams.KEY_DEVICE_ID}) {
+                StartParams.KEY_DEVICE_ID}) {
             String v = prefs.getString(key, null);
             if (v != null) {
                 stored.put(key, v);
