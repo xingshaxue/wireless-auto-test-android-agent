@@ -460,8 +460,12 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         if (fileTransferManager != null) {
             fileTransferManager.pauseTransferForDevice(mac, true);
         }
-        controller.terminate();
+        // terminate 统一由 destroyController 内部完成（→ TERMINATED 并上报 DEVICE_STATE、
+        // 注册表注销、GATT 关闭，与 §16.4 applyConfig 移除路径对齐）；显式再调一次会
+        // 触发 TERMINATED→TERMINATED 非法迁移（§4.1 终态不可迁出）。
         bleCentralManager.destroyController(mac);
+        // §7.7：下线设备的轮询配置同步清理，防 tick 钳制/查找引用已移除设备。
+        pollingScheduler.removeConfig(mac);
         stateReporter.reportCommandAck(requestId, 0, null);
     }
 

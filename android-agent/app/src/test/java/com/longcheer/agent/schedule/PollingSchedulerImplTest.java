@@ -187,6 +187,20 @@ public class PollingSchedulerImplTest {
         assertEquals(80L, scheduler.getEffectiveTickMs());
     }
 
+    @Test
+    public void removeConfigDeletesEntryAndRestoresTickClamp() {
+        // §16.4/§7.7：设备下线后轮询配置必须删除，其 interval 不再参与 tick 钳制。
+        when(config.getTickIntervalMs()).thenReturn(1000L);
+        scheduler.updateConfig(MAC, pollCfg(200, true));
+        assertEquals(100L, scheduler.getEffectiveTickMs()); // 钳制到 200/2
+
+        scheduler.removeConfig(MAC);
+        assertEquals(1000L, scheduler.getEffectiveTickMs()); // 无配置 → 恢复配置值
+
+        scheduler.removeConfig(MAC); // 幂等：重复移除无副作用
+        assertEquals(1000L, scheduler.getEffectiveTickMs());
+    }
+
     // ---------- M3-5 结果缓存与上报 ----------
 
     @Test

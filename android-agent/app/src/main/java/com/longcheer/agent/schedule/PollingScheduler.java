@@ -17,6 +17,12 @@ public interface PollingScheduler {
     void updateConfig(String mac, PollingConfig config);
 
     /**
+     * 移除某设备的轮询配置（§16.4 整项替换 / §7.7 移除设备）：
+     * 不清理会导致 tick 钳制与查找长期引用已下线设备。
+     */
+    void removeConfig(String mac);
+
+    /**
      * 暂停某设备的轮询调度（§7.6：文件传输期间避免 GATT 操作冲突）。
      * 在途轮询任务自然完成，不再产生新欠账。
      */

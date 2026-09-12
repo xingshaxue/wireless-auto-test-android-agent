@@ -23,9 +23,11 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -227,6 +229,11 @@ public class CommandDispatcherTest {
     public void testRemoveDeviceDestroysController() {
         DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.READY);
         when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);
+        // 测试替身复刻真实 destroyController 契约：terminate + 注册表注销。
+        doAnswer(inv -> {
+            controller.terminate();
+            return null;
+        }).when(bleCentralManager).destroyController("AA:BB:CC:DD:EE:FF");
 
         Map<String, Object> cmd = new HashMap<>();
         cmd.put("type", "REMOVE_DEVICE");
@@ -237,9 +244,41 @@ public class CommandDispatcherTest {
 
         verify(connectionScheduler).cancelRequest("AA:BB:CC:DD:EE:FF");
         verify(connectionScheduler).releaseSlot("AA:BB:CC:DD:EE:FF");
-        verify(controller).terminate();
+        // terminate 仅由 destroyController 内部触发一次（dispatcher 不再显式调用）。
+        verify(controller, times(1)).terminate();
         verify(bleCentralManager).destroyController("AA:BB:CC:DD:EE:FF");
         verify(stateReporter, times(1)).reportCommandAck("req-8", 0, null);
+    }
+
+    @Test
+    public void testRemoveDeviceTerminatesExactlyOnceWithoutException() {
+        // 回归（§7.7/§4.1）：REMOVE_DEVICE 全流程只 terminate 一次——真实
+        // DeviceControllerImpl 对 TERMINATED→TERMINATED 抛 IllegalStateException。
+        com.longcheer.agent.registry.DeviceRegistryImpl realRegistry =
+                new com.longcheer.agent.registry.DeviceRegistryImpl();
+        DeviceController realController =
+                new com.longcheer.agent.ble.DeviceControllerImpl("dut-001", "AA:BB:CC:DD:EE:FF");
+        realRegistry.register(realController);
+        BleCentralManager fakeBle = mock(BleCentralManager.class);
+        doAnswer(inv -> {
+            // 复刻 BleCentralManagerImpl.destroyController 契约：terminate + 注册表注销。
+            realController.terminate();
+            realRegistry.unregister(inv.getArgument(0));
+            return null;
+        }).when(fakeBle).destroyController("AA:BB:CC:DD:EE:FF");
+        CommandDispatcherImpl realRegistryDispatcher = new CommandDispatcherImpl(fakeBle,
+                realRegistry, connectionScheduler, pollingScheduler, stateReporter, config,
+                pollResultChain, fileTransferManager);
+
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "REMOVE_DEVICE");
+        cmd.put("requestId", "req-rm1");
+        cmd.put("deviceMac", "AA:BB:CC:DD:EE:FF");
+        realRegistryDispatcher.dispatch(cmd); // 双重 terminate 会在此处抛异常
+
+        assertEquals(DeviceState.TERMINATED, realController.getState());
+        assertNull(realRegistry.findByMac("AA:BB:CC:DD:EE:FF"));
+        verify(stateReporter).reportCommandAck("req-rm1", 0, null);
     }
 
     @Test

@@ -133,6 +133,7 @@ class Runtime:
         session.agent_id = agent_id
         info = {k: v for k, v in raw.items() if k != "token"}
         await self.store.upsert_agent(agent_id, info)
+        self.ingest.reset_view(agent_id)  # 重注册 = 状态新起点，清掉旧设备缓存
         config = await self.config_manager.build_config(agent_id)
         await self.registry.register(
             session,

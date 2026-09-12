@@ -131,10 +131,25 @@ public class PollingSchedulerImpl implements PollingScheduler, GattExecutorImpl.
     }
 
     @Override
-    public void updateConfig(String mac, PollingConfig config) {        if (config != null) {
+    public void updateConfig(String mac, PollingConfig config) {
+        if (config != null) {
             configs.put(mac, config);
         }
         // 设备配置变化可能影响全局最小轮询间隔 → 重校验 tick 钳制（§6.4）。
+        reclampTick();
+    }
+
+    @Override
+    public void removeConfig(String mac) {
+        if (configs.remove(mac) == null) {
+            return;
+        }
+        // §16.4 整项替换/§7.7 移除：下线设备的 interval 不再参与 tick 钳制。
+        reclampTick();
+    }
+
+    /** 配置集合变化后重校验 tick 钳制（§6.4），必要时按新周期重启调度。 */
+    private void reclampTick() {
         long clamped = effectiveTickIntervalMs(configs.values());
         if (clamped != effectiveTickMs) {
             effectiveTickMs = clamped;

@@ -122,6 +122,11 @@ class EventIngest:
 
     # ---------------- 查询 ----------------
 
+    def reset_view(self, agent_id: str) -> None:
+        """注册/重注册时重置视图：REGISTER_ACK 全量配置是 agent 状态的新事实来源，
+        旧视图的设备缓存（可能已从配置删除）不应残留。"""
+        self._views[agent_id] = self._new_view()
+
     def agent_view(self, agent_id: str) -> dict[str, Any]:
         """单 agent 最后已知状态（无记录返回空视图）。"""
         view = self._views.get(agent_id)

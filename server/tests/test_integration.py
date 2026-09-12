@@ -245,3 +245,22 @@ async def test_command_unknown_agent_404(api):
     r = await api.post("/api/commands/ghost",
                        json={"type": "RESET"})
     assert r.status_code == 404
+
+
+async def test_reregister_resets_device_view(runtime):
+    """重注册清空设备视图：配置删设备后 agent 重注册，视图不再残留旧设备。"""
+    agent = await FakeAgent.connect(runtime.gateway_port)
+    await agent.send(_register_msg())
+    ack = await agent.recv_json()
+    assert ack["errorCode"] == 0
+    mac = "AA:BB:CC:DD:EE:FF"
+    await agent.send({"type": "DEVICE_STATE", "timestamp": 1,
+                      "deviceMac": mac, "state": "READY"})
+    await asyncio.sleep(0.3)
+    assert mac in runtime.ingest.agent_view(AGENT)["devices"]
+    # 同一连接重注册（agent 重连语义）
+    await agent.send(_register_msg())
+    await agent.recv_json()  # REGISTER_ACK
+    await asyncio.sleep(0.3)
+    assert runtime.ingest.agent_view(AGENT)["devices"] == {}
+    await agent.close()

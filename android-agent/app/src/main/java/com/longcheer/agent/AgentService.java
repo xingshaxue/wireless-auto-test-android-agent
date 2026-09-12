@@ -667,7 +667,9 @@ public class AgentService extends Service {
             }
         }
 
-        // §16.4 整项替换：新配置中不存在的设备从注册表移除（销毁 Controller）。
+        // §16.4 整项替换：注册表中已存在但新配置不存在的设备，按 §7.7 移除流程下线
+        // （与 REMOVE_DEVICE 命令路径一致；destroyController 内含 terminate → TERMINATED
+        // 并上报 DEVICE_STATE、注册表注销、GATT 关闭，模拟/真实模式一致生效）。
         Set<String> configured = new java.util.HashSet<>();
         for (DeviceConfig device : devices) {
             if (device.getMac() != null) {
@@ -675,10 +677,31 @@ public class AgentService extends Service {
             }
         }
         for (String existingMac : new ArrayList<>(deviceRegistry.allMacs())) {
-            if (!configured.contains(existingMac)) {
-                AgentLog.i(TAG, "config replaced: remove device " + existingMac);
-                bleCentralManager.destroyController(existingMac);
+            if (configured.contains(existingMac)) {
+                continue;
             }
+            AgentLog.i(TAG, "config replaced: remove device " + existingMac);
+            DeviceController controller = deviceRegistry.findByMac(existingMac);
+            connectionScheduler.cancelRequest(existingMac);
+            connectionScheduler.releaseSlot(existingMac);
+            if (controller != null) {
+                // §7.7 第 4 条：丢弃命令前逐条回 CMD_ACK 2004，服务器 requestId 对账不悬挂。
+                for (com.longcheer.agent.model.QueuedTask task : controller.drainPendingCommands()) {
+                    if (task instanceof com.longcheer.agent.model.GattCommand) {
+                        String cmdRequestId = ((com.longcheer.agent.model.GattCommand) task).getRequestId();
+                        if (cmdRequestId != null) {
+                            stateReporter.reportCommandAck(cmdRequestId, 2004,
+                                    "command cancelled by config replacement");
+                        }
+                    }
+                }
+            }
+            // §7.7 第 5 条：进行中文件传输中止并上报 FILE_RESULT（cancelled）。
+            if (fileTransferManager != null) {
+                fileTransferManager.pauseTransferForDevice(existingMac, true);
+            }
+            bleCentralManager.destroyController(existingMac);
+            pollingScheduler.removeConfig(existingMac);
         }
 
         // 通知服务器当前拓扑。
@@ -1332,6 +1355,11 @@ public class AgentService extends Service {
         @Override
         public void updateConfig(String mac, PollingConfig config) {
             Log.d(TAG, "StubPollingScheduler.updateConfig " + mac);
+        }
+
+        @Override
+        public void removeConfig(String mac) {
+            Log.d(TAG, "StubPollingScheduler.removeConfig " + mac);
         }
 
         @Override

@@ -169,9 +169,20 @@ def build_router(runtime: "Runtime") -> APIRouter:
 
     @router.delete("/devices/{mac}")
     async def delete_device(mac: str) -> dict[str, Any]:
+        # 先查归属（删库前），在线归属 agent 需同步 REMOVE_DEVICE（§7.7）
+        session = _owner_session(mac)
         if not await config.delete_device(mac):
             raise HTTPException(status_code=404, detail="设备不存在")
-        return {"ok": True, "mac": mac}
+        if session is None:
+            # 归属 agent 离线或无归属：仅删配置
+            return {"ok": True, "mac": mac, "dispatched": False, "result": None}
+        try:
+            result = await _send_and_wait(session, "REMOVE_DEVICE", deviceMac=mac)
+        except HTTPException as e:
+            # ACK 超时/失败（504）不阻断删除结果，错误透传在 result 里
+            return {"ok": True, "mac": mac, "dispatched": True,
+                    "result": {"error": e.detail}}
+        return {"ok": True, "mac": mac, "dispatched": True, "result": result}
 
     @router.post("/devices/{mac}/polling-interval")
     async def set_polling_interval(mac: str, body: dict[str, Any]) -> dict[str, Any]:

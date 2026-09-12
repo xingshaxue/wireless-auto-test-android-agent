@@ -118,6 +118,10 @@ async def agent(runtime, api):
     assert ack["type"] == "REGISTER_ACK" and ack["errorCode"] == 0
     await a.send({"type": "DEVICE_STATE", "timestamp": 2,
                   "deviceMac": MAC, "state": "READY"})
+    # 等 server 侧 ingest 视图落好再返回，避免后续用例与事件处理赛跑
+    async def _view_ready():
+        return MAC in runtime.ingest.agent_view(AGENT)["devices"]
+    await _until(_view_ready)
     yield a
     await a.close()
 
@@ -197,6 +201,51 @@ async def test_rules_and_persistent_no_owner(api):
     assert r.status_code == 200 and r.json()["dispatched"] is False
     devices = (await api.get("/api/devices")).json()
     assert devices[0]["persistent"] is True
+
+
+async def test_delete_device_dispatch_and_ack(api, agent):
+    """归属 agent 在线：删除 → 下发 REMOVE_DEVICE → 回 ACK → dispatched=True。"""
+    req_task = asyncio.create_task(api.delete(f"/api/devices/{MAC}"))
+    cmd = await agent.recv_json()
+    assert cmd["type"] == "REMOVE_DEVICE" and cmd["deviceMac"] == MAC
+    await agent.send({"type": "CMD_ACK", "timestamp": 3,
+                      "requestId": cmd["requestId"], "errorCode": 0})
+    resp = await req_task
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True and body["mac"] == MAC
+    assert body["dispatched"] is True
+    assert body["result"]["errorCode"] == 0
+    assert body["result"]["ledgerStatus"] == "acked"
+    assert (await api.get("/api/devices")).json() == []
+    # 再删 → 404
+    assert (await api.delete(f"/api/devices/{MAC}")).status_code == 404
+
+
+async def test_delete_device_ack_timeout_not_blocking(api, agent):
+    """归属 agent 在线但不同 ACK：删除仍成功（200），错误透传在 result。"""
+    req_task = asyncio.create_task(api.delete(f"/api/devices/{MAC}"))
+    cmd = await agent.recv_json()
+    assert cmd["type"] == "REMOVE_DEVICE"
+    resp = await req_task  # 不回 ACK
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True and body["dispatched"] is True
+    assert body["result"]["error"]
+    assert (await api.get("/api/devices")).json() == []
+
+
+async def test_delete_device_no_owner(api):
+    """无归属 agent：只删配置，dispatched=False；不存在 → 404。"""
+    await api.put("/api/devices", json=_device())
+    r = await api.delete(f"/api/devices/{MAC}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True and body["mac"] == MAC
+    assert body["dispatched"] is False and body["result"] is None
+    assert (await api.get("/api/devices")).json() == []
+    r = await api.delete("/api/devices/00:00:00:00:00:00")
+    assert r.status_code == 404
 
 
 async def test_offline_owner_409(runtime, api, agent):
