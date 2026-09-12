@@ -152,6 +152,26 @@ export interface ScenarioItem {
   path: string
 }
 
+/** GET /api/scenarios/{path} 场景内容 */
+export interface ScenarioDetail {
+  path: string
+  name: string
+  content: Record<string, unknown>
+}
+
+/** PUT /api/scenarios/{path} 成功响应 */
+export interface ScenarioSaveResult {
+  ok: boolean
+  path: string
+  name: string
+}
+
+/** DELETE /api/scenarios/{path} 响应 */
+export interface ScenarioDeleteResult {
+  ok: boolean
+  path: string
+}
+
 /** GET /api/tests/runs 列表行（注意：列表行无 agentId，仅 running 快照有） */
 export interface TestRunRow {
   runId: string

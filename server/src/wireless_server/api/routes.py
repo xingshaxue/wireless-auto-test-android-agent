@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from pathlib import Path
@@ -25,7 +26,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # 场景目录：<repo>/server/scenarios（本文件位于 src/wireless_server/api/ 下）
+# 测试可 monkeypatch 本变量做目录隔离；函数内均按全局名延迟查找
 SCENARIOS_DIR = Path(__file__).resolve().parents[3] / "scenarios"
+
+
+def _scenario_file(path: str, *, append_suffix: bool = False) -> Path:
+    """URL 路径参数 → scenarios 目录内的文件路径（防路径穿越）。
+
+    仅允许目录内单层的 .json 文件：basename 必须与原始参数一致（拒绝
+    ../、绝对路径、嵌套子目录），resolve 后再确认仍在 scenarios 目录内
+    （防符号链接逃逸）。非法一律 404。
+    """
+    name = Path(path).name
+    if not name or name != path:
+        raise HTTPException(status_code=404, detail="非法场景路径")
+    if append_suffix and not name.endswith(".json"):
+        name += ".json"
+    if not name.endswith(".json"):
+        raise HTTPException(status_code=404, detail="仅支持 .json 场景文件")
+    root = SCENARIOS_DIR.resolve()
+    p = (root / name).resolve()
+    if not p.is_relative_to(root):
+        raise HTTPException(status_code=404, detail="非法场景路径")
+    return p
 
 
 def build_router(runtime: "Runtime") -> APIRouter:
@@ -350,6 +373,47 @@ def build_router(runtime: "Runtime") -> APIRouter:
                     continue
                 out.append({"name": name, "path": p.name})
         return out
+
+    @router.get("/scenarios/{path:path}")
+    async def get_scenario(path: str) -> dict[str, Any]:
+        """读取单个场景文件：{"path", "name", "content": 解析后的 JSON 对象}。"""
+        p = _scenario_file(path)
+        if not p.is_file():
+            raise HTTPException(status_code=404,
+                                detail=f"场景文件不存在: {p.name}")
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=422,
+                                detail=f"场景文件 JSON 非法: {e}")
+        try:
+            sc = Scenario.model_validate(data)
+        except ValidationError as e:
+            raise HTTPException(status_code=422,
+                                detail=f"场景不符合模型: {e}")
+        return {"path": p.name, "name": sc.name, "content": data}
+
+    @router.put("/scenarios/{path:path}")
+    async def put_scenario(path: str, body: dict[str, Any]) -> dict[str, Any]:
+        """创建/整文件覆盖场景：先过 Scenario 校验，合法才落盘（缩进 2）。"""
+        p = _scenario_file(path, append_suffix=True)
+        try:
+            sc = Scenario.model_validate(body)
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=f"场景非法: {e}")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(body, ensure_ascii=False, indent=2) + "\n",
+                     encoding="utf-8")
+        return {"ok": True, "path": p.name, "name": sc.name}
+
+    @router.delete("/scenarios/{path:path}")
+    async def delete_scenario(path: str) -> dict[str, Any]:
+        p = _scenario_file(path)
+        if not p.is_file():
+            raise HTTPException(status_code=404,
+                                detail=f"场景文件不存在: {p.name}")
+        p.unlink()
+        return {"ok": True, "path": p.name}
 
     @router.post("/tests/run")
     async def run_test(body: dict[str, Any]) -> dict[str, Any]:
