@@ -108,8 +108,15 @@ public class PollingSchedulerImpl implements PollingScheduler, GattExecutorImpl.
             return t;
         });
         scheduler.scheduleAtFixedRate(() -> {
-            if (running) {
+            if (!running) {
+                return;
+            }
+            try {
                 tick();
+            } catch (Throwable t) {
+                // 周期任务异常会被 ScheduledExecutorService 静默终止（不再触发），
+                // 必须兜底保活：记录后继续下一拍（真机联调暴露的调度器静默死亡）。
+                AgentLog.w(TAG, "scheduler tick error (kept alive): " + t);
             }
         }, effectiveTickMs, effectiveTickMs, TimeUnit.MILLISECONDS);
     }
@@ -308,14 +315,14 @@ public class PollingSchedulerImpl implements PollingScheduler, GattExecutorImpl.
                 continue;
             }
 
-            // 欠账防重入：上一轮尚未完成则只标记，不入队（§6.1）。
-            if (pendingPollFlags.putIfAbsent(mac, Boolean.TRUE) != null) {
-                maybeReportStale(mac, "NO_SLOT");
-                continue;
-            }
-
             DeviceState state = controller.getState();
             if (state == DeviceState.READY) {
+                // 欠账防重入：仅在真正入队轮询任务时置标记；上一轮未完成则跳过（§6.1）。
+                // 申请槽位阶段不置标记——否则设备经 POLL 通道获槽到 READY 后，
+                // 标记会永远挡住任务入队（真机联调暴露：READY 空转 2s 被释放，再不轮询）。
+                if (pendingPollFlags.putIfAbsent(mac, Boolean.TRUE) != null) {
+                    continue;
+                }
                 controller.enqueuePollTask(createSimpleTask(mac, cfg));
                 pollStartAt.put(mac, now); // §13 avgPollMs 计时起点
             } else if (POLL_REQUEST_STATES.contains(state)) {

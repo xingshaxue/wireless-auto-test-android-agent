@@ -123,17 +123,35 @@ public class PollingSchedulerImplTest {
     }
 
     @Test
-    public void antiReentrySkipsWhilePreviousPollPending() {
+    public void slotRequestRepeatedButIdempotentUpsert() {
+        // §16.5：同一 deviceMac 每 tick 重复 requestSlot 由调度器幂等 upsert，不重复排队；
+        // 防重入标记只挡轮询任务入队，不挡槽位申请（真机联调修复）。
         DeviceController controller = addDevice(MAC, DeviceState.REGISTERED, pollCfg(60000, true));
         scheduler.updateConfig(MAC, pollCfg(60000, true));
         scheduler.tick();
         now[0] += 60001;
 
         scheduler.tick(); // 第一次到期 → 申请槽位
-        scheduler.tick(); // 上一轮未完成 → 只标记不重复申请（§6.1）
+        scheduler.tick(); // 未获槽继续申请（upsert）
         scheduler.tick();
 
-        verify(connectionScheduler, times(1)).requestSlot(any());
+        verify(connectionScheduler, times(3)).requestSlot(any());
+    }
+
+    @Test
+    public void pollRequestedDeviceEnqueuesTaskOnceReady() {
+        // 回归（真机联调）：经 POLL 通道获槽到 READY 的设备必须能入队轮询任务。
+        DeviceController controller = addDevice(MAC, DeviceState.REGISTERED, pollCfg(60000, true));
+        scheduler.updateConfig(MAC, pollCfg(60000, true));
+        scheduler.tick();
+        now[0] += 60001;
+        scheduler.tick(); // 到期 → 申请槽位
+
+        when(controller.getState()).thenReturn(DeviceState.READY); // 获槽建连完成
+        scheduler.tick(); // READY → 入队任务
+        scheduler.tick(); // 任务未完成 → 不重复入队（§6.1 防重入）
+
+        verify(controller, times(1)).enqueuePollTask(any());
     }
 
     @Test

@@ -146,12 +146,14 @@ public class FileTransferManager {
             reportError(3004, "disk quota exceeded", mac);
             return 3004;
         }
-        if (transferDir.getUsableSpace() < totalSize) {
-            reportError(3004, "insufficient free space, pause accepting new tasks", mac);
-            return 3004;
-        }
+        // 先建目录再查可用空间：目录不存在时 getUsableSpace() 恒返回 0，
+        // 会把空间检查误判成 3004（真机联调暴露）。
         if (!transferDir.isDirectory() && !transferDir.mkdirs()) {
             reportError(3004, "cannot create transfer dir", mac);
+            return 3004;
+        }
+        if (transferDir.getUsableSpace() < totalSize) {
+            reportError(3004, "insufficient free space, pause accepting new tasks", mac);
             return 3004;
         }
 

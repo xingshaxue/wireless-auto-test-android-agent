@@ -121,6 +121,8 @@ public class AgentService extends Service {
     private String token = "";
     private String deviceId = "";
     private boolean simulateDut = false;
+    /** 启动参数是否已解析（onStartCommand 或 bind 路径兜底解析后置 true）。 */
+    private volatile boolean paramsResolved = false;
 
     // 运行期配置
     private AgentConfig agentConfig;
@@ -245,9 +247,17 @@ public class AgentService extends Service {
             return START_NOT_STICKY;
         }
 
+        String prevHost = serverHost;
+        int prevPort = serverPort;
         parseStartExtras(intent);
         if (!initialized.get()) {
             initializeComponents();
+        } else if (!serverHost.equals(prevHost) || serverPort != prevPort) {
+            // 目标服务器变更：断开旧连接按新参数重连注册（重复 ACTION_START 不再静默忽略）
+            AgentLog.i(TAG, "server target changed -> reconnect "
+                    + serverHost + ":" + serverPort);
+            tcpClient.disconnect();
+            connectAndRegister();
         }
         return START_STICKY;
     }
@@ -318,7 +328,11 @@ public class AgentService extends Service {
             statsCollector.start(stateReporter, interval);
         }
 
-        // 连接服务器并发送 REGISTER。
+        // 连接服务器并发送 REGISTER。bind 路径（控制台拉起服务）不会经过
+        // onStartCommand，先按本地已存配置解析参数，避免用默认 127.0.0.1 直连。
+        if (!paramsResolved) {
+            parseStartExtras(null);
+        }
         connectAndRegister();
     }
 
@@ -413,6 +427,7 @@ public class AgentService extends Service {
         }
         AgentLog.i(TAG, "start params: host=" + serverHost + " port=" + serverPort
                 + " deviceId=" + deviceId + " simulateDut=" + simulateDut);
+        paramsResolved = true;
     }
 
     private void connectAndRegister() {
@@ -651,9 +666,15 @@ public class AgentService extends Service {
                 continue;
             }
             try {
-                result.add(UUID.fromString(item));
-            } catch (IllegalArgumentException ignored) {
-                // 非法 UUID 跳过，配置校验层应集中告警。
+                String trimmed = item.trim();
+                // A.1 编码约定：4/8 位短 UUID 扩展为蓝牙基础 UUID（真机联调暴露：
+                // 直接 UUID.fromString("2A19") 静默丢弃导致轮询序列为空）。
+                if (trimmed.length() <= 8) {
+                    trimmed = String.format("0000%s-0000-1000-8000-00805f9b34fb", trimmed);
+                }
+                result.add(UUID.fromString(trimmed));
+            } catch (IllegalArgumentException e) {
+                AgentLog.w(TAG, "invalid UUID in config skipped: " + item);
             }
         }
         return result;

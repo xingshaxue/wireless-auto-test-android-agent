@@ -123,13 +123,28 @@ public class DeviceControllerImpl implements DeviceController {
     @Override
     public void onSlotAcquired() {
         synchronized (lock) {
-            if (info.getState() != DeviceState.WAITING_SLOT
-                    && info.getState() != DeviceState.REGISTERED) {
-                return;
-            }
-            if (info.getState() == DeviceState.REGISTERED) {
-                // §4.1：REGISTERED 不能直达 CONNECTING，须经 WAITING_SLOT。
-                transitionTo(DeviceState.WAITING_SLOT);
+            DeviceState state = info.getState();
+            switch (state) {
+                case WAITING_SLOT:
+                    break;
+                case REGISTERED:
+                case DISCONNECTED:
+                    // §4.1：REGISTERED/DISCONNECTED 不能直达 CONNECTING，须经 WAITING_SLOT。
+                    // DISCONNECTED 必须受理：调度器授槽白名单（§16.5 GRANTABLE_STATES）含
+                    // DISCONNECTED，而 FILE_TRANSFER 不在控制器队列挂任务（§7.6），设备可能
+                    // 刚被时间片释放——若静默返回，pinned 槽位悬挂、设备永不 READY（真机联调暴露）。
+                    transitionTo(DeviceState.WAITING_SLOT);
+                    break;
+                case RECONNECTING:
+                    // 授槽与 GATT 回调线程的异常断开存在竞态：槽已授予时设备可能刚进入
+                    // 退避。pinned 高优请求（§7.6）应使其尽快重排——经 WAITING_SLOT 转
+                    // CONNECTING（§4.1：RECONNECTING→CONNECTING 非法）；未决退避计时到期后
+                    // 见非 RECONNECTING 状态自动失效。
+                    transitionTo(DeviceState.WAITING_SLOT);
+                    break;
+                default:
+                    // READY/CONNECTING 等：已在池中或建连在飞，等待自然就绪即可。
+                    return;
             }
             transitionTo(DeviceState.CONNECTING);
             if (deps == null) {
@@ -411,6 +426,7 @@ public class DeviceControllerImpl implements DeviceController {
 
     @Override
     public void enqueueCommand(GattCommand cmd) {
+        boolean executeNow;
         synchronized (lock) {
             if (info.getState() == DeviceState.TERMINATED) {
                 return;
@@ -423,11 +439,17 @@ public class DeviceControllerImpl implements DeviceController {
             if (info.getState() == DeviceState.REGISTERED || info.getState() == DeviceState.DISCONNECTED) {
                 transitionTo(DeviceState.WAITING_SLOT);
             }
+            executeNow = info.getState() == DeviceState.READY;
+        }
+        // §7.4 第 4 步：设备已在池中且 READY → 立即执行（drain 为原子出队，重复调用无害）。
+        if (executeNow) {
+            drainPendingTasks();
         }
     }
 
     @Override
     public void enqueuePollTask(PollingTask task) {
+        boolean executeNow;
         synchronized (lock) {
             if (info.getState() == DeviceState.TERMINATED || info.getState() == DeviceState.PAUSED) {
                 return;
@@ -439,6 +461,12 @@ public class DeviceControllerImpl implements DeviceController {
             if (info.getState() == DeviceState.REGISTERED || info.getState() == DeviceState.DISCONNECTED) {
                 transitionTo(DeviceState.WAITING_SLOT);
             }
+            executeNow = info.getState() == DeviceState.READY;
+        }
+        // §7.3：READY 期间到期的轮询立即执行——drain 不只发生在 READY 迁移瞬间，
+        // 否则持槽设备上后到的任务会滞留队列（真机联调暴露）。
+        if (executeNow) {
+            drainPendingTasks();
         }
     }
 

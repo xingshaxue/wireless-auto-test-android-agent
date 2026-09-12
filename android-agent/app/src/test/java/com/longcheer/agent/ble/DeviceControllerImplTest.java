@@ -94,6 +94,39 @@ public class DeviceControllerImplTest {
         assertEquals(null, c.snapshot().getStateFlag());
     }
 
+    @Test
+    public void onSlotAcquiredFromDisconnectedConnectsToReady() {
+        DeviceControllerImpl c = newController();
+        c.onSlotAcquired(); // 模拟建连 → READY
+        c.onSlotReleased(); // 时间片释放 → DISCONNECTED
+        assertEquals(DeviceState.DISCONNECTED, c.getState());
+
+        // FILE_TRANSFER pinned 授槽（§7.6）：DISCONNECTED 必须推进建连，
+        // 静默返回会导致槽位悬挂、设备永不 READY（真机联调暴露）。
+        c.onSlotAcquired();
+        assertEquals(DeviceState.READY, c.getState());
+    }
+
+    @Test
+    public void onSlotAcquiredFromReconnectingExpeditesViaWaitingSlot() {
+        DeviceControllerImpl c = newController();
+        c.enqueueCommand(GattCommand.simple(MAC, "r1", GattCommand.Type.READ, null, CHAR, null,
+                GattCommand.Priority.HIGH));
+        c.onSlotAcquired();
+        c.onSlotReleased();       // → DISCONNECTED
+        c.onAbnormalDisconnect(); // → RECONNECTING（退避中）
+        assertEquals(DeviceState.RECONNECTING, c.getState());
+
+        // pinned 授槽与异常断开竞态：槽已授予时设备在退避，应尽快重排。
+        // §4.1：RECONNECTING→CONNECTING 非法，必须经 WAITING_SLOT。
+        c.onSlotAcquired();
+        assertEquals(DeviceState.READY, c.getState());
+
+        // 未决退避计时随后到期：见非 RECONNECTING 状态自动失效，不得再迁移。
+        c.onReconnectBackoffExpired();
+        assertEquals(DeviceState.READY, c.getState());
+    }
+
     @Test(expected = IllegalStateException.class)
     public void illegalTransitionRejectedByStateMachine() {
         DeviceControllerImpl c = newController();

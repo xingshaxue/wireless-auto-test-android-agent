@@ -105,8 +105,15 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
             return t;
         });
         scheduler.scheduleAtFixedRate(() -> {
-            if (running) {
+            if (!running) {
+                return;
+            }
+            try {
                 tick();
+            } catch (Throwable t) {
+                // 周期任务异常会被 ScheduledExecutorService 静默终止（不再触发），
+                // 必须兜底保活：记录后继续下一拍（真机联调暴露的调度器静默死亡）。
+                AgentLog.w(TAG, "scheduler tick error (kept alive): " + t);
             }
         }, config.getTickIntervalMs(), config.getTickIntervalMs(), TimeUnit.MILLISECONDS);
     }
@@ -318,10 +325,15 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
         // 3) 建连预算 / 时间片 / 空闲释放（pinned 与常驻设备不回收，§5.2 第 1/3/4 条）。
         for (DeviceController controller : activePool.all()) {
             String mac = controller.snapshot().getMac();
+            DeviceState state = controller.getState();
+            if (state == DeviceState.READY) {
+                // §7.5：重连成功清零（pinned/常驻设备同样适用——传输期间的
+                // 成功重连不应累计到 maxReconnectAttempts 误判放弃）。
+                reconnectAttempts.remove(mac);
+            }
             if (isPinned(mac) || isPersistent(mac)) {
                 continue;
             }
-            DeviceState state = controller.getState();
             if (CONNECTING_STATES.contains(state)) {
                 ConnectionSlot slot = slotManager.slotOf(mac);
                 if (slot != null && now > slot.getAcquireTime() + config.getSetupBudgetMs()) {
@@ -329,7 +341,6 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
                     evict(mac, now, true); // §12.5：超预算强释放并计一次连接失败（重连计数属 BLE 里程碑）
                 }
             } else if (state == DeviceState.READY) {
-                reconnectAttempts.remove(mac); // §7.5：重连成功清零
                 ManagedDeviceInfo info = controller.snapshot();
                 if (info.getPendingCommands().isEmpty()) {
                     idleSince.putIfAbsent(mac, now);
@@ -387,6 +398,8 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
     /**
      * 选择当前最高有效优先级的可授槽请求；顺带清理无效请求（设备不存在 /
      * 已在池中 / 状态不可授槽）。冷却期设备跳过但保留请求（§5.2 第 5 条）。
+     * pinned 请求（§7.6 文件传输）在设备退避重连期间保留：退避到期转 WAITING_SLOT
+     * 后按原优先级授槽，避免传输意图随请求被清除而丢失。
      */
     private ConnectionRequest pickBestRequest(long now) {
         ConnectionRequest best = null;
@@ -396,6 +409,10 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
             DeviceController controller = deviceRegistry.findByMac(mac);
             if (controller == null || activePool.contains(mac)
                     || !GRANTABLE_STATES.contains(controller.getState())) {
+                if (controller != null && !activePool.contains(mac) && pinReasons.containsKey(mac)
+                        && controller.getState() == DeviceState.RECONNECTING) {
+                    continue; // pinned + 退避中：保留请求等待退避到期（§7.5 / §7.6）
+                }
                 // 需求已失效或已在池（槽位使命已完成），清除请求。
                 pendingRequests.remove(mac);
                 continue;

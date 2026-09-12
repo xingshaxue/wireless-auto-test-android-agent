@@ -145,4 +145,75 @@ public class ReconnectFlowTest {
         assertEquals(DeviceState.PAUSED, controller.getState());
         assertEquals(0, scheduler.pendingRequestCount());
     }
+
+    // ---------- FILE_TRANSFER pinned 授槽（§7.6，真机联调暴露） ----------
+
+    /**
+     * 复现场景：设备 READY 空转被时间片释放为 DISCONNECTED（队列已空、轮询已挂起），
+     * 此时 pinned FILE_TRANSFER 请求获槽——授槽前设备不在 WAITING_SLOT，
+     * onSlotAcquired 若静默返回则永不 READY（传输 16s 超时 1001 的根因）。
+     */
+    @Test
+    public void pinnedFileTransferGrantConnectsTimeSlicedDevice() {
+        DeviceControllerImpl controller = addDeviceWithCommand();
+        connectToReady(controller);
+        controller.drainPendingCommands(); // 队列清空，模拟轮询欠账已消费
+        scheduler.releaseSlot(MAC);        // 时间片到期释放 → DISCONNECTED
+        assertEquals(DeviceState.DISCONNECTED, controller.getState());
+        assertFalse(pool.contains(MAC));
+
+        scheduler.pin(MAC, "FILE_TRANSFER");
+        scheduler.requestSlot(new ConnectionRequest(MAC, ConnectionRequest.PRIORITY_HIGH,
+                ConnectionRequest.Reason.FILE_TRANSFER, now[0], now[0] + 30000));
+        scheduler.tick();
+
+        assertTrue(pool.contains(MAC));
+        assertTrue(slotManager.slotOf(MAC).isPinned());
+        assertEquals(DeviceState.READY, controller.getState()); // 修复前：停在 DISCONNECTED
+    }
+
+    /** pinned 请求在设备退避重连期间不得被清除（§7.5 / §7.6）：退避到期后按原请求授槽。 */
+    @Test
+    public void pinnedRequestSurvivesReconnectBackoff() {
+        DeviceControllerImpl controller = addDeviceWithCommand();
+        connectToReady(controller);
+        scheduler.onAbnormalDisconnect(MAC); // → RECONNECTING（退避中，不持槽）
+        assertEquals(DeviceState.RECONNECTING, controller.getState());
+
+        scheduler.pin(MAC, "FILE_TRANSFER");
+        scheduler.requestSlot(new ConnectionRequest(MAC, ConnectionRequest.PRIORITY_HIGH,
+                ConnectionRequest.Reason.FILE_TRANSFER, now[0], now[0] + 30000));
+        scheduler.tick();
+
+        // RECONNECTING 不可授槽：请求保留等待退避到期（修复前被直接清除，传输意图丢失）。
+        assertEquals(1, scheduler.pendingRequestCount());
+        assertEquals(DeviceState.RECONNECTING, controller.getState());
+
+        scheduler.onReconnectBackoffExpired(MAC); // 退避到期 → WAITING_SLOT
+        scheduler.tick();
+
+        assertTrue(pool.contains(MAC));
+        assertTrue(slotManager.slotOf(MAC).isPinned());
+        assertEquals(DeviceState.READY, controller.getState());
+    }
+
+    /** pinned 设备传输期间重连成功也应清零重连计数（§7.5），否则累计超限误判放弃。 */
+    @Test
+    public void reconnectAttemptsClearedForPinnedReadyDevice() {
+        when(config.getMaxReconnectAttempts()).thenReturn(1);
+        DeviceControllerImpl controller = addDeviceWithCommand();
+        connectToReady(controller);
+        scheduler.pin(MAC, "FILE_TRANSFER");
+
+        scheduler.onAbnormalDisconnect(MAC); // attempt=1（未超限）
+        assertEquals(DeviceState.RECONNECTING, controller.getState());
+        scheduler.onReconnectBackoffExpired(MAC);
+        scheduler.tick();
+        assertEquals(DeviceState.READY, controller.getState());
+        scheduler.tick(); // 下一拍 step 3 见到 pinned READY → 清零重连计数
+
+        // 再次异常断开：若计数未清零，attempt=2 > maxAttempts=1 会误判进入 ERROR。
+        scheduler.onAbnormalDisconnect(MAC);
+        assertEquals(DeviceState.RECONNECTING, controller.getState());
+    }
 }
