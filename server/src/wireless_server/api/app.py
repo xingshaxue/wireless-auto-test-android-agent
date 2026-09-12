@@ -85,4 +85,29 @@ def create_app(runtime: "Runtime") -> FastAPI:
             recv_task.cancel()
             runtime.ingest.remove_listener(listener)  # 断开清理
 
+    # 前端静态托管：web/dist 存在时挂载到 /（SPA fallback 到 index.html）；
+    # 不存在则纯 API 模式。/api 与 /ws 路由已在上方注册，优先级高于静态挂载。
+    _mount_web_console(app)
+
     return app
+
+
+def _mount_web_console(app: FastAPI) -> None:
+    from pathlib import Path
+
+    from fastapi.responses import FileResponse
+
+    dist = Path(__file__).resolve().parents[4] / "web" / "dist"
+    if not (dist / "index.html").is_file():
+        logger.info("web/dist 不存在，纯 API 模式（前端未构建）")
+        return
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa(full_path: str) -> FileResponse:
+        # 命中静态资源直接返回；其余路径回退 index.html（SPA 前端路由）
+        candidate = dist / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(dist / "index.html")
+
+    logger.info("Web 控制台已挂载: %s", dist)

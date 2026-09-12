@@ -458,3 +458,22 @@ async def test_ws_bad_token_rejected(runtime):
     with pytest.raises(websockets.exceptions.InvalidStatus):
         async with websockets.connect(_ws_url(runtime), proxy=None):
             pass
+
+
+async def test_web_console_static_hosting(runtime):
+    """web/dist 存在时 SPA 托管：/ 与非 /api 路径回退 index.html，/api 不受影响。"""
+    import httpx
+
+    dist_index = None
+    from pathlib import Path
+    idx = Path(__file__).resolve().parents[2] / "web" / "dist" / "index.html"
+    if not idx.is_file():
+        pytest.skip("web/dist 未构建")
+    async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{runtime.api_port}",
+                                 trust_env=False) as client:
+        r = await client.get("/")
+        assert r.status_code == 200 and "html" in r.text.lower()
+        r = await client.get("/tests")  # SPA 前端路由 → 回退 index.html
+        assert r.status_code == 200 and "html" in r.text.lower()
+        r = await client.get("/api/agents")  # API 无 token 仍 401，不被静态吞掉
+        assert r.status_code == 401

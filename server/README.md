@@ -417,12 +417,23 @@ server_host/server_port/token 指向本服务的 gateway 监听地址）。
 
 ```bash
 cd server
-.venv/bin/python -m pytest tests/ -q    # 158 个用例
+.venv/bin/python -m pytest tests/ -q    # 161 个用例
 ```
 
 覆盖 codec / protocol / ledger / store / configsvc / transfer / engine /
 api / 集成链路。`tools/mock_server.py --selftest` 仍可用于协议对照（mock 与
 本服务器实现同一套附录 A / §16.3 协议）。
+
+## 9.1 Web 控制台（前端）
+
+仓库 `web/` 目录是本服务器的配套控制台（Vue 3 + Element Plus）：Dashboard、
+Agents（命令下发/台账）、设备管理、文件传输、测试编排、事件流六个页面。
+
+- 构建：`cd web && npm install && npm run build`（产出 `web/dist/`）
+- 托管：FastAPI 启动时检测 `web/dist/index.html`，存在即挂载到 `/`
+  （SPA fallback；`/api`、`/ws` 优先），单端口交付；dist 不存在退化为纯 API 模式
+- 开发：`npm run dev`（5173 端口，代理 `/api`/`/ws` 到 8080）
+- 详见 `web/README.md`
 
 ## 10. 目录结构
 
