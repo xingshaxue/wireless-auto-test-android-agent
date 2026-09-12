@@ -93,17 +93,17 @@ public class AndroidGattClient implements GattClient {
     }
 
     @Override
-    public void writeCharacteristic(UUID serviceUuid, UUID charUuid, byte[] payload, boolean noResponse) {
+    public boolean writeCharacteristic(UUID serviceUuid, UUID charUuid, byte[] payload, boolean noResponse) {
         BluetoothGattCharacteristic c = findChar(serviceUuid, charUuid);
         BluetoothGatt g = gatt;
         if (g == null || c == null) {
             post(() -> callback.onWrite(charUuid, -1));
-            return;
+            return false;
         }
         c.setValue(payload == null ? new byte[0] : payload);
         c.setWriteType(noResponse ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
                 : BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
-        g.writeCharacteristic(c);
+        return g.writeCharacteristic(c);
     }
 
     @Override

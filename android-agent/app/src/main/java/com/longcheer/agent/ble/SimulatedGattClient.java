@@ -103,7 +103,7 @@ public class SimulatedGattClient implements GattClient {
     }
 
     @Override
-    public void writeCharacteristic(UUID serviceUuid, UUID charUuid, byte[] payload, boolean noResponse) {
+    public boolean writeCharacteristic(UUID serviceUuid, UUID charUuid, byte[] payload, boolean noResponse) {
         callbackExecutor.execute(() -> {
             if (CHAR_STATUS.equals(charUuid) && payload != null) {
                 status = payload.clone();
@@ -113,6 +113,7 @@ public class SimulatedGattClient implements GattClient {
             }
             callback.onWrite(charUuid, 0);
         });
+        return true;
     }
 
     @Override

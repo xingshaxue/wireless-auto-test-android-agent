@@ -295,6 +295,8 @@ public class DeviceControllerImpl implements DeviceController {
 
         @Override
         public void onNotifySubscribed(UUID charUuid, int status) {
+            // §7.6：带外通道（LC 传输握手等 CCCD 写结果）的等待通路，与状态机无关先行投递。
+            deps.responseBus.onNotifySubscribed(info.getMac(), charUuid, status);
             boolean readyToFinish = false;
             synchronized (lock) {
                 if (info.getState() != DeviceState.CONFIGURING) {
@@ -639,6 +641,7 @@ public class DeviceControllerImpl implements DeviceController {
     }
 
     /** @return 实际协商的 MTU（§3.2 记录值），模拟模式返回默认 23。 */
+    @Override
     public int getNegotiatedMtu() {
         return negotiatedMtu;
     }

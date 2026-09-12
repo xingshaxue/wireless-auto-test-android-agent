@@ -42,6 +42,14 @@ public interface DeviceController {
 
     DeviceState getState();
 
+    /**
+     * 实际协商的 MTU（§3.2；未实现/未知返回 0，调用方按协议默认包长处理）。
+     * 文件传输适配器据此联动包长（LC 通道需 MTU≥227）。
+     */
+    default int getNegotiatedMtu() {
+        return 0;
+    }
+
     ManagedDeviceInfo snapshot();
 
     // ---- 显式写接口（SDD §8.1 并发与回写约定：写入一律经控制器在锁内完成） ----

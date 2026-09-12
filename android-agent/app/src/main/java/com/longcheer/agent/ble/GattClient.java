@@ -50,8 +50,9 @@ public interface GattClient {
      * 写特征。
      *
      * @param noResponse true = WRITE_NO_RESPONSE（文件分块吞吐前提 §7.6）
+     * @return false = 协议栈未受理（Tx 队列打满等），调用方可短重试（§7.6）
      */
-    void writeCharacteristic(UUID serviceUuid, UUID charUuid, byte[] payload, boolean noResponse);
+    boolean writeCharacteristic(UUID serviceUuid, UUID charUuid, byte[] payload, boolean noResponse);
 
     /** 订阅/退订通知（CONFIGURING 阶段按 notifyCharacteristics 调用，§7.3.3）。 */
     void setNotification(UUID serviceUuid, UUID charUuid, boolean enable);

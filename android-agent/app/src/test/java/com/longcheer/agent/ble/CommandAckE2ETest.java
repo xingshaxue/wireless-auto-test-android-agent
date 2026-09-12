@@ -80,9 +80,10 @@ public class CommandAckE2ETest {
         }
 
         @Override
-        public void writeCharacteristic(UUID serviceUuid, UUID charUuid, byte[] payload,
-                                        boolean noResponse) {
+        public boolean writeCharacteristic(UUID serviceUuid, UUID charUuid, byte[] payload,
+                                           boolean noResponse) {
             callback.onWrite(charUuid, writeStatus);
+            return true;
         }
 
         @Override

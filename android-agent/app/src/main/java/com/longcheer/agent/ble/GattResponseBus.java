@@ -78,6 +78,15 @@ public class GattResponseBus {
         }
     }
 
+    /**
+     * Notify 订阅（CCCD descriptor 写）结果通路（§7.6：LC 传输握手等订阅完成再协商，
+     * 防 CCCD 竞态）。复用完成槽机制，op 键为 "CCCD"。
+     */
+    public void onNotifySubscribed(String mac, UUID charUuid, int status) {
+        complete(key(mac, charUuid, "CCCD"),
+                status == 0 ? GattResult.ok(null) : GattResult.fail(status));
+    }
+
     private void complete(String key, GattResult result) {
         CompletableFuture<GattResult> future = pending.remove(key);
         if (future != null) {

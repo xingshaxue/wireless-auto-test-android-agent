@@ -86,8 +86,9 @@ public class BleConnectFlowTest {
         }
 
         @Override
-        public void writeCharacteristic(UUID serviceUuid, UUID charUuid, byte[] payload,
-                                        boolean noResponse) {
+        public boolean writeCharacteristic(UUID serviceUuid, UUID charUuid, byte[] payload,
+                                           boolean noResponse) {
+            return true;
         }
 
         @Override
