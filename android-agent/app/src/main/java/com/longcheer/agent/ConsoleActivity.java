@@ -14,7 +14,6 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.view.View;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -24,8 +23,10 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+
 import com.longcheer.agent.config.StartParams;
-import com.longcheer.agent.model.DeviceState;
 
 import java.util.HashMap;
 import java.util.List;
@@ -48,7 +49,9 @@ public class ConsoleActivity extends Activity {
     private CheckBox checkAutoStart;
     private TextView textStatus;
     private TextView deviceTitle;
-    private LinearLayout deviceList;
+    private TextView deviceEmpty;
+    private RecyclerView deviceRecycler;
+    private DeviceCardAdapter deviceAdapter;
 
     private SharedPreferences prefs;
     private AgentService service;
@@ -136,11 +139,20 @@ public class ConsoleActivity extends Activity {
         root.addView(textStatus);
 
         deviceTitle = new TextView(this);
-        deviceTitle.setPadding(0, pad, 0, 0);
+        deviceTitle.setPadding(0, pad, 0, pad / 2);
         root.addView(deviceTitle);
-        deviceList = new LinearLayout(this);
-        deviceList.setOrientation(LinearLayout.VERTICAL);
-        root.addView(deviceList);
+        deviceEmpty = new TextView(this);
+        deviceEmpty.setTextSize(13f);
+        deviceEmpty.setPadding(0, pad / 2, 0, pad / 2);
+        deviceEmpty.setVisibility(View.GONE);
+        root.addView(deviceEmpty);
+        deviceAdapter = new DeviceCardAdapter();
+        deviceRecycler = new RecyclerView(this);
+        deviceRecycler.setLayoutManager(new LinearLayoutManager(this));
+        // 外层是 ScrollView：关闭嵌套滚动，让 RecyclerView 按内容撑高。
+        deviceRecycler.setNestedScrollingEnabled(false);
+        deviceRecycler.setAdapter(deviceAdapter);
+        root.addView(deviceRecycler);
 
         ScrollView scroll = new ScrollView(this);
         scroll.addView(root);
@@ -244,8 +256,7 @@ public class ConsoleActivity extends Activity {
         } else {
             sb.append("\n服务未启动");
             deviceTitle.setText("受管设备");
-            deviceList.removeAllViews();
-            addDeviceRow("服务未启动");
+            showDevicePlaceholder("服务未启动");
         }
         textStatus.setText(sb.toString());
     }
@@ -254,69 +265,21 @@ public class ConsoleActivity extends Activity {
         Object managed = summary.get("devicesManaged");
         Object ready = summary.get("devicesReady");
         deviceTitle.setText("受管设备（" + managed + " 台，READY " + ready + " 台）");
-        deviceList.removeAllViews();
         List<Map<String, Object>> devices = service.deviceStates();
         if (devices.isEmpty()) {
-            addDeviceRow("（暂无受管设备，等待服务器下发配置）");
+            showDevicePlaceholder("（暂无受管设备，等待服务器下发配置）");
             return;
         }
-        for (Map<String, Object> d : devices) {
-            addDeviceRow(formatDeviceRow(d));
-        }
+        deviceEmpty.setVisibility(View.GONE);
+        deviceRecycler.setVisibility(View.VISIBLE);
+        deviceAdapter.submitList(devices);
     }
 
-    private String formatDeviceRow(Map<String, Object> d) {
-        StringBuilder row = new StringBuilder();
-        row.append(d.get("mac")).append("  ").append(stateLabel(String.valueOf(d.get("state"))));
-        long lastPollTime = d.get("lastPollTime") instanceof Number
-                ? ((Number) d.get("lastPollTime")).longValue() : 0L;
-        if (lastPollTime > 0) {
-            // lastPollTime 基于 SystemClock.elapsedRealtime（开机单调时钟），展示为相对时间。
-            long agoSec = Math.max(0, (SystemClock.elapsedRealtime() - lastPollTime) / 1000L);
-            row.append("\n    最近轮询: ").append(agoSec).append(" 秒前");
-            if (Boolean.TRUE.equals(d.get("pollDataStale"))) {
-                row.append("（数据过期）");
-            }
-            String summary = String.valueOf(d.get("lastPollSummary"));
-            if (!summary.isEmpty() && !"null".equals(summary)) {
-                row.append("  ").append(summary);
-            }
-        } else {
-            row.append("\n    最近轮询: —");
-        }
-        return row.toString();
-    }
-
-    private void addDeviceRow(String text) {
-        TextView row = new TextView(this);
-        row.setTextSize(13f);
-        row.setText(text);
-        deviceList.addView(row);
-    }
-
-    private static String stateLabel(String stateName) {
-        DeviceState state;
-        try {
-            state = DeviceState.valueOf(stateName);
-        } catch (IllegalArgumentException e) {
-            return stateName;
-        }
-        switch (state) {
-            case READY: return "就绪";
-            case POLLING: return "轮询中";
-            case COMMANDING: return "命令执行中";
-            case CONNECTING: return "连接中";
-            case SERVICE_DISCOVERING: return "服务发现中";
-            case CONFIGURING: return "配置中";
-            case WAITING_SLOT: return "等待槽位";
-            case RECONNECTING: return "重连中";
-            case DISCONNECTED: return "已断开";
-            case PAUSED: return "暂停";
-            case ERROR: return "错误";
-            case TERMINATED: return "已终止";
-            case REGISTERED:
-            default: return "已注册";
-        }
+    private void showDevicePlaceholder(String text) {
+        deviceAdapter.submitList(null);
+        deviceRecycler.setVisibility(View.GONE);
+        deviceEmpty.setText(text);
+        deviceEmpty.setVisibility(View.VISIBLE);
     }
 
     private Map<String, String> prefsToMap() {
