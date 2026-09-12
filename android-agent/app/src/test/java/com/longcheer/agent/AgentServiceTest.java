@@ -112,6 +112,13 @@ public class AgentServiceTest {
     }
 
     @Test
+    public void deviceStatesMethodIsPublicListReturning() throws Exception {
+        Method m = AgentService.class.getDeclaredMethod("deviceStates");
+        assertTrue(Modifier.isPublic(m.getModifiers()));
+        assertEquals(java.util.List.class, m.getReturnType());
+    }
+
+    @Test
     public void agentConfigFromJsonProvidesDefaults() {
         AgentConfig config = AgentConfig.fromJson(null);
         assertNotNull(config);

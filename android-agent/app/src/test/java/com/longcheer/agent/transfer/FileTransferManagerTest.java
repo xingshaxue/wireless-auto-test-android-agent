@@ -27,11 +27,14 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyDouble;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -350,6 +353,44 @@ public class FileTransferManagerTest {
         verify(reporter, timeout(5000)).report(eq("FILE_RESULT"), org.mockito.ArgumentMatchers.argThat(
                 p -> p instanceof Map && Integer.valueOf(0).equals(errorCodeOf((Map<String, Object>) p))));
         assertEquals(2, adapter.handshakes.get()); // 恢复后重新握手
+    }
+
+    // ---------- M4-4 FILE_PROGRESS 节流上报（§7.6） ----------
+
+    @Test
+    public void throttledProgressReportedMidWindow() {
+        // sendChunk 每块推进假时钟 100ms → 大窗口内每 4 块（400ms）触发一次节流上报。
+        adapter = new FakeAdapter() {
+            @Override
+            public void sendChunk(byte[] chunk, int seq) {
+                super.sendChunk(chunk, seq);
+                now[0] += 100L;
+            }
+        };
+        byte[] content = fileContent(64); // 8 chunks，单窗口（window=64）
+        assertEquals(0, manager.startTransfer("t20", "fw.bin", MAC, content.length,
+                sha256(content), BLE_CHUNK, 64));
+        feedDownload(content);
+
+        assertEquals(FileTransferTask.FileTransferState.COMPLETED, manager.getTaskState("t20"));
+        // 2 次窗口内节流上报（50%、100%）+ 1 次窗口 ACK 兜底上报（100%）
+        ArgumentCaptor<Double> percent = ArgumentCaptor.forClass(Double.class);
+        verify(reporter, times(3)).reportFileProgress(eq("t20"), percent.capture(), anyLong());
+        List<Double> values = percent.getAllValues();
+        assertEquals(50.0, values.get(0), 0.001);
+        assertEquals(100.0, values.get(1), 0.001);
+        assertEquals(100.0, values.get(2), 0.001);
+    }
+
+    @Test
+    public void rapidChunksReportOnlyAtWindowAck() {
+        // 假时钟不前进：窗口内不触发节流上报，仅每窗口 ACK 上报一次。
+        byte[] content = fileContent(32); // 4 chunks = 2 windows
+        start("t21", content);
+        feedDownload(content);
+
+        assertEquals(FileTransferTask.FileTransferState.COMPLETED, manager.getTaskState("t21"));
+        verify(reporter, times(2)).reportFileProgress(eq("t21"), anyDouble(), anyLong());
     }
 
     // ---------- M4-5 续传与取消 ----------

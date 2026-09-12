@@ -46,6 +46,8 @@ public class FileTransferManager {
     static final int MAX_WINDOW_RETRY = 3;
     /** 分块无响应超时（§7.6：30s 暂停并上报）。 */
     static final long CHUNK_ACK_TIMEOUT_MS = 30000L;
+    /** FILE_PROGRESS 节流间隔（§7.6）：传输循环中距上次上报 ≥400ms 即补报细粒度进度。 */
+    static final long PROGRESS_REPORT_INTERVAL_MS = 400L;
 
     /** TransferAdapter 工厂（生产走 GATT，测试注入 fake）。 */
     public interface TransferAdapterFactory {
@@ -408,6 +410,15 @@ public class FileTransferManager {
             try {
                 for (int seq = startSeq; seq <= endSeq; seq++) {
                     adapter.sendChunk(readChunk(ctx.file, seq, chunkSize, task.getTotalSize()), seq);
+                    // 时间节流细粒度上报（§7.6）：窗口内 transferredOffset 不前进，
+                    // 以已发送字节数估算当前进度，距上次上报 ≥400ms 即补报。
+                    long now = clock.getAsLong();
+                    if (now - lastProgressTime >= PROGRESS_REPORT_INTERVAL_MS) {
+                        long sentOffset = Math.min((long) seq * chunkSize, task.getTotalSize());
+                        reportProgress(ctx, sentOffset, lastProgressTime, lastProgressOffset);
+                        lastProgressTime = now;
+                        lastProgressOffset = sentOffset;
+                    }
                 }
             } catch (TransferAdapter.TransferException | java.io.IOException e) {
                 AgentLog.w(TAG, "send chunk failed: " + e.getMessage());
@@ -417,7 +428,9 @@ public class FileTransferManager {
             if (ack == TransferAdapter.WindowAck.OK) {
                 task.setTransferredOffset(Math.min((long) endSeq * chunkSize, task.getTotalSize()));
                 task.setRetryCount(0);
-                lastProgressTime = reportProgress(ctx, lastProgressTime, lastProgressOffset);
+                // 窗口 ACK 处按已确认 offset 上报（兜底/最终值）。
+                reportProgress(ctx, task.getTransferredOffset(), lastProgressTime, lastProgressOffset);
+                lastProgressTime = clock.getAsLong();
                 lastProgressOffset = task.getTransferredOffset();
             } else if (ack == TransferAdapter.WindowAck.NAK) {
                 task.setRetryCount(task.getRetryCount() + 1);
@@ -442,15 +455,15 @@ public class FileTransferManager {
         return 0;
     }
 
-    private long reportProgress(TransferContext ctx, long lastTime, long lastOffset) {
+    /** 上报一次 FILE_PROGRESS：percent 与 bytesPerSec 基于调用方给定的当前 offset。 */
+    private void reportProgress(TransferContext ctx, long offset, long lastTime, long lastOffset) {
         long now = clock.getAsLong();
         FileTransferTask task = ctx.task;
         long elapsed = Math.max(1, now - lastTime);
-        long bytesPerSec = (task.getTransferredOffset() - lastOffset) * 1000L / elapsed;
+        long bytesPerSec = (offset - lastOffset) * 1000L / elapsed;
         double percent = task.getTotalSize() == 0 ? 100.0
-                : task.getTransferredOffset() * 100.0 / task.getTotalSize();
+                : offset * 100.0 / task.getTotalSize();
         stateReporter.reportFileProgress(task.getTaskId(), percent, bytesPerSec);
-        return now;
     }
 
     /** 申请 pinned 槽位并等待设备 READY（超时 = connectTimeout + setupBudget + 余量）。 */

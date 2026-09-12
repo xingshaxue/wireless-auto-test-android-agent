@@ -14,7 +14,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.PowerManager;
+import android.os.SystemClock;
 import android.view.View;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -25,32 +25,30 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.longcheer.agent.config.StartParams;
+import com.longcheer.agent.model.DeviceState;
 
-import java.io.File;
-import java.io.RandomAccessFile;
-import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Agent 控制台（脱网独立运营入口）：本机配置服务器参数、启停服务、查看状态与日志、
- * 引导蓝牙权限与省电白名单。
+ * Agent 控制台（脱网独立运营入口）：只需配一次服务器地址与设备 ID，
+ * 启停服务、查看 TCP 状态与受管设备实时状态，引导蓝牙权限与省电白名单。
  *
- * <p>程序化 UI（不引 XML/第三方库）；调试与运营工具，不参与 SDD 协议面。</p>
+ * <p>程序化 UI（不引 XML/第三方库）；调试与运营工具，不参与 SDD 协议面。
+ * 端口固定走 {@link StartParams#DEFAULT_PORT}，虚拟 DUT 仅经 adb extra/测试路径启用。</p>
  */
 public class ConsoleActivity extends Activity {
 
     private static final String PREFS = "agent_prefs";
-    private static final int LOG_TAIL_LINES = 15;
     private static final long STATUS_REFRESH_MS = 2000L;
 
     private EditText editHost;
-    private EditText editPort;
     private EditText editDeviceId;
-    private CheckBox checkSimulateDut;
     private CheckBox checkAutoStart;
     private TextView textStatus;
-    private TextView textLog;
+    private TextView deviceTitle;
+    private LinearLayout deviceList;
 
     private SharedPreferences prefs;
     private AgentService service;
@@ -114,17 +112,7 @@ public class ConsoleActivity extends Activity {
         root.setPadding(pad, pad, pad, pad);
 
         editHost = labeledEdit(root, "服务器地址（如 192.168.1.100）");
-        editPort = labeledEdit(root, "端口（默认 10086）");
-        editPort.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         editDeviceId = labeledEdit(root, "设备 ID（留空自动用本机 ANDROID_ID 派生）");
-
-        checkSimulateDut = new CheckBox(this);
-        checkSimulateDut.setText("虚拟 DUT 模式（无蓝牙环境/CI 测试）");
-        root.addView(checkSimulateDut);
-
-        checkAutoStart = new CheckBox(this);
-        checkAutoStart.setText("开机自动启动服务");
-        root.addView(checkAutoStart);
 
         LinearLayout row1 = new LinearLayout(this);
         row1.setOrientation(LinearLayout.HORIZONTAL);
@@ -133,6 +121,10 @@ public class ConsoleActivity extends Activity {
         addButton(row1, "停止服务", v -> stopAgentService());
         root.addView(row1);
 
+        checkAutoStart = new CheckBox(this);
+        checkAutoStart.setText("开机自动启动服务");
+        root.addView(checkAutoStart);
+
         LinearLayout row2 = new LinearLayout(this);
         row2.setOrientation(LinearLayout.HORIZONTAL);
         addButton(row2, "蓝牙权限", v -> requestBlePermissions());
@@ -140,16 +132,15 @@ public class ConsoleActivity extends Activity {
         root.addView(row2);
 
         textStatus = new TextView(this);
-        textStatus.setPadding(0, pad, 0, pad);
+        textStatus.setPadding(0, pad, 0, 0);
         root.addView(textStatus);
 
-        TextView logTitle = new TextView(this);
-        logTitle.setText("最近日志");
-        root.addView(logTitle);
-        textLog = new TextView(this);
-        textLog.setTextSize(10f);
-        textLog.setTypeface(android.graphics.Typeface.MONOSPACE);
-        root.addView(textLog);
+        deviceTitle = new TextView(this);
+        deviceTitle.setPadding(0, pad, 0, 0);
+        root.addView(deviceTitle);
+        deviceList = new LinearLayout(this);
+        deviceList.setOrientation(LinearLayout.VERTICAL);
+        root.addView(deviceList);
 
         ScrollView scroll = new ScrollView(this);
         scroll.addView(root);
@@ -182,18 +173,19 @@ public class ConsoleActivity extends Activity {
 
     private void loadPrefsIntoViews() {
         editHost.setText(prefs.getString(StartParams.KEY_SERVER_HOST, ""));
-        editPort.setText(prefs.getString(StartParams.KEY_SERVER_PORT, ""));
         editDeviceId.setText(prefs.getString(StartParams.KEY_DEVICE_ID, ""));
-        checkSimulateDut.setChecked(prefs.getBoolean(StartParams.KEY_SIMULATE_DUT, false));
         checkAutoStart.setChecked(prefs.getBoolean(StartParams.KEY_AUTO_START, false));
     }
 
     private void saveViewsIntoPrefs() {
         prefs.edit()
                 .putString(StartParams.KEY_SERVER_HOST, editHost.getText().toString().trim())
-                .putString(StartParams.KEY_SERVER_PORT, editPort.getText().toString().trim())
+                // 端口固定默认 10086（StartParams.resolve 空值走 DEFAULT_PORT）；
+                // 清掉旧版本可能存过的端口，避免 UI 不可见时残留生效。
+                .remove(StartParams.KEY_SERVER_PORT)
                 .putString(StartParams.KEY_DEVICE_ID, editDeviceId.getText().toString().trim())
-                .putBoolean(StartParams.KEY_SIMULATE_DUT, checkSimulateDut.isChecked())
+                // UI 不再暴露虚拟 DUT；显式写 false，防旧配置残留导致真机误进虚拟模式。
+                .putBoolean(StartParams.KEY_SIMULATE_DUT, false)
                 .putBoolean(StartParams.KEY_AUTO_START, checkAutoStart.isChecked())
                 .apply();
         toast("配置已保存");
@@ -237,7 +229,7 @@ public class ConsoleActivity extends Activity {
         }
     }
 
-    // ==================== 状态与日志 ====================
+    // ==================== 状态与受管设备 ====================
 
     private void refreshStatus() {
         StringBuilder sb = new StringBuilder();
@@ -247,43 +239,94 @@ public class ConsoleActivity extends Activity {
         if (service != null) {
             Map<String, Object> s = service.statusSummary();
             sb.append("\nTCP: ").append(Boolean.TRUE.equals(s.get("tcpConnected")) ? "已连接" : "未连接")
-                    .append("  设备: ").append(s.get("devicesManaged"))
-                    .append(" 台（READY ").append(s.get("devicesReady")).append("）")
-                    .append("\n配置版本: ").append(s.get("configVersion"))
-                    .append("  模拟DUT: ").append(s.get("simulateDut"));
+                    .append("\n配置版本: ").append(s.get("configVersion"));
+            refreshDeviceList(s);
         } else {
-            sb.append("\n服务未绑定（未运行或未授权）");
+            sb.append("\n服务未启动");
+            deviceTitle.setText("受管设备");
+            deviceList.removeAllViews();
+            addDeviceRow("服务未启动");
         }
         textStatus.setText(sb.toString());
-        textLog.setText(readLogTail());
+    }
+
+    private void refreshDeviceList(Map<String, Object> summary) {
+        Object managed = summary.get("devicesManaged");
+        Object ready = summary.get("devicesReady");
+        deviceTitle.setText("受管设备（" + managed + " 台，READY " + ready + " 台）");
+        deviceList.removeAllViews();
+        List<Map<String, Object>> devices = service.deviceStates();
+        if (devices.isEmpty()) {
+            addDeviceRow("（暂无受管设备，等待服务器下发配置）");
+            return;
+        }
+        for (Map<String, Object> d : devices) {
+            addDeviceRow(formatDeviceRow(d));
+        }
+    }
+
+    private String formatDeviceRow(Map<String, Object> d) {
+        StringBuilder row = new StringBuilder();
+        row.append(d.get("mac")).append("  ").append(stateLabel(String.valueOf(d.get("state"))));
+        long lastPollTime = d.get("lastPollTime") instanceof Number
+                ? ((Number) d.get("lastPollTime")).longValue() : 0L;
+        if (lastPollTime > 0) {
+            // lastPollTime 基于 SystemClock.elapsedRealtime（开机单调时钟），展示为相对时间。
+            long agoSec = Math.max(0, (SystemClock.elapsedRealtime() - lastPollTime) / 1000L);
+            row.append("\n    最近轮询: ").append(agoSec).append(" 秒前");
+            if (Boolean.TRUE.equals(d.get("pollDataStale"))) {
+                row.append("（数据过期）");
+            }
+            String summary = String.valueOf(d.get("lastPollSummary"));
+            if (!summary.isEmpty() && !"null".equals(summary)) {
+                row.append("  ").append(summary);
+            }
+        } else {
+            row.append("\n    最近轮询: —");
+        }
+        return row.toString();
+    }
+
+    private void addDeviceRow(String text) {
+        TextView row = new TextView(this);
+        row.setTextSize(13f);
+        row.setText(text);
+        deviceList.addView(row);
+    }
+
+    private static String stateLabel(String stateName) {
+        DeviceState state;
+        try {
+            state = DeviceState.valueOf(stateName);
+        } catch (IllegalArgumentException e) {
+            return stateName;
+        }
+        switch (state) {
+            case READY: return "就绪";
+            case POLLING: return "轮询中";
+            case COMMANDING: return "命令执行中";
+            case CONNECTING: return "连接中";
+            case SERVICE_DISCOVERING: return "服务发现中";
+            case CONFIGURING: return "配置中";
+            case WAITING_SLOT: return "等待槽位";
+            case RECONNECTING: return "重连中";
+            case DISCONNECTED: return "已断开";
+            case PAUSED: return "暂停";
+            case ERROR: return "错误";
+            case TERMINATED: return "已终止";
+            case REGISTERED:
+            default: return "已注册";
+        }
     }
 
     private Map<String, String> prefsToMap() {
-        Map<String, String> m = new java.util.HashMap<>();
+        Map<String, String> m = new HashMap<>();
         for (Map.Entry<String, ?> e : prefs.getAll().entrySet()) {
             if (e.getValue() != null) {
                 m.put(e.getKey(), e.getValue().toString());
             }
         }
         return m;
-    }
-
-    private String readLogTail() {
-        try {
-            File logFile = new File(getFilesDir(), "logs/agent.log");
-            if (!logFile.exists()) {
-                return "（暂无日志）";
-            }
-            List<String> lines = java.nio.file.Files.readAllLines(logFile.toPath());
-            int from = Math.max(0, lines.size() - LOG_TAIL_LINES);
-            StringBuilder sb = new StringBuilder();
-            for (String line : new ArrayList<>(lines.subList(from, lines.size()))) {
-                sb.append(line).append('\n');
-            }
-            return sb.toString();
-        } catch (Exception e) {
-            return "（日志读取失败：" + e.getMessage() + "）";
-        }
     }
 
     private void toast(String msg) {

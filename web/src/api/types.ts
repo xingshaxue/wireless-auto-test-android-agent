@@ -141,6 +141,7 @@ export interface TransferTask {
   totalChunks: number
   size: number
   percent: number
+  downloadPercent: number
   errorCode: number | null
   detail: string | null
   createdTs: number

@@ -356,6 +356,52 @@ public class AgentService extends Service {
         return s;
     }
 
+    /**
+     * 控制台逐设备状态列表（ConsoleActivity 经 Binder 读取；每台一个只读摘要，
+     * 遍历走控制器既有 snapshot() 深拷贝机制，不触碰控制器内部状态）。
+     */
+    public List<Map<String, Object>> deviceStates() {
+        List<Map<String, Object>> list = new ArrayList<>();
+        if (deviceRegistry == null) {
+            return list;
+        }
+        for (DeviceController controller : deviceRegistry.allControllers()) {
+            ManagedDeviceInfo info = controller.snapshot();
+            Map<String, Object> item = new HashMap<>();
+            item.put("mac", info.getMac());
+            item.put("deviceId", info.getDeviceId());
+            DeviceState state = info.getState();
+            item.put("state", state == null ? "" : state.name());
+            item.put("lastPollTime", info.getLastPollTime());
+            item.put("pollDataStale", info.isPollDataStale());
+            item.put("lastPollSummary", summarizePollResult(info.getLastPollResult()));
+            list.add(item);
+        }
+        return list;
+    }
+
+    /** 轮询值摘要：特征数 + 首个特征值 hex 预览（最多 8 字节）。 */
+    private static String summarizePollResult(Map<UUID, byte[]> pollResult) {
+        if (pollResult == null || pollResult.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append(pollResult.size()).append(" 项特征值");
+        Map.Entry<UUID, byte[]> first = pollResult.entrySet().iterator().next();
+        byte[] value = first.getValue();
+        if (value != null && value.length > 0) {
+            sb.append("，").append(first.getKey().toString(), 0, 8).append("=0x");
+            int len = Math.min(value.length, 8);
+            for (int i = 0; i < len; i++) {
+                sb.append(String.format(java.util.Locale.US, "%02X", value[i]));
+            }
+            if (value.length > len) {
+                sb.append("…");
+            }
+        }
+        return sb.toString();
+    }
+
     private void parseStartExtras(Intent intent) {
         // 脱网独立运营：启动参数 = Intent extras > 本地已存配置 > 内置默认（StartParams）。
         Map<String, String> extras = new HashMap<>();

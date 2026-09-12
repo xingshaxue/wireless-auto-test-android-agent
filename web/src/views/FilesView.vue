@@ -132,6 +132,13 @@ async function cancelTask(t: TransferTask) {
   }
 }
 
+function phaseText(t: TransferTask): string {
+  const dl = Math.round(t.downloadPercent ?? 0)
+  if (t.state === 'COMPLETED') return '完成'
+  if (t.state === 'PUSHING' || dl < 100) return `下载中 ${dl}%`
+  return `已下载，传输中 ${Math.round(t.percent)}%`
+}
+
 function stateTagType(state: string): string {
   switch (state) {
     case 'COMPLETED': return 'success'
@@ -265,12 +272,42 @@ onBeforeUnmount(() => {
             <el-tag :type="stateTagType(row.state)" size="small">{{ row.state }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="进度" min-width="160">
+        <el-table-column label="进度" min-width="200">
           <template #default="{ row }">
+            <el-tag
+              v-if="row.state === 'WAIT_READY' || row.state === 'PAUSED'"
+              :type="stateTagType(row.state)"
+              size="small"
+            >
+              {{ row.state === 'PAUSED' ? '已暂停' : '等待设备' }}
+            </el-tag>
             <el-progress
+              v-else-if="row.state === 'FAILED' || row.state === 'CANCELLED'"
               :percentage="Math.round(row.percent)"
-              :status="row.state === 'FAILED' ? 'exception' : row.state === 'COMPLETED' ? 'success' : undefined"
+              :status="row.state === 'FAILED' ? 'exception' : undefined"
             />
+            <div v-else class="progress-two-stage">
+              <div class="stage-caption">{{ phaseText(row) }}</div>
+              <div class="stage-row">
+                <span class="stage-label">下载</span>
+                <el-progress
+                  :percentage="Math.round(row.downloadPercent ?? 0)"
+                  :stroke-width="8"
+                  color="#409eff"
+                  class="stage-bar"
+                />
+              </div>
+              <div v-if="(row.downloadPercent ?? 0) >= 100" class="stage-row">
+                <span class="stage-label">传输</span>
+                <el-progress
+                  :percentage="Math.round(row.percent)"
+                  :stroke-width="8"
+                  color="#67c23a"
+                  :status="row.state === 'COMPLETED' ? 'success' : undefined"
+                  class="stage-bar"
+                />
+              </div>
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="块" width="90">
@@ -361,6 +398,30 @@ onBeforeUnmount(() => {
 }
 .mono {
   font-family: monospace;
+}
+.progress-two-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stage-caption {
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--el-text-color-secondary);
+}
+.stage-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.stage-label {
+  flex: none;
+  width: 28px;
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+.stage-bar {
+  flex: 1;
 }
 .full-width {
   width: 100%;

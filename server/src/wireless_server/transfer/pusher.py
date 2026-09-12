@@ -72,7 +72,8 @@ class FilePusher:
             "taskId": task_id, "fileId": file_id, "agentId": agent_id,
             "deviceMac": device_mac, "state": WAIT_READY,
             "ackedSeq": 0, "totalChunks": total, "size": rec["size"],
-            "percent": 0.0, "errorCode": None, "detail": None,
+            "percent": 0.0, "downloadPercent": 0.0, "errorCode": None,
+            "detail": None,
             "createdTs": int(time.time() * 1000),
             "_path": rec["path"], "_push": None,
         }
@@ -129,6 +130,7 @@ class FilePusher:
                 task["detail"] = raw.get("detail")
                 if code == 0:
                     task["state"] = COMPLETED
+                    task["percent"] = 100.0
                 elif code == int(ProtocolErrorCode.COMMAND_CANCELLED):
                     task["state"] = CANCELLED  # 2004（A.3）
                 else:
@@ -175,6 +177,8 @@ class FilePusher:
                 return
             await session.send_frame(
                 FT_FILE_FRAME, seq, data[(seq - 1) * chunk: seq * chunk])
+            # 下载段实时进度（推送侧），供前端进度条（percent 由 agent FILE_PROGRESS 管）
+            task["downloadPercent"] = round(seq / total * 100, 1) if total else 100.0
             if seq % yield_every == 0:
                 await asyncio.sleep(0)
         if task["state"] != PUSHING:
@@ -208,6 +212,7 @@ class FilePusher:
             logger.info("任务 %s 重发帧 %s", task["taskId"], resend_seqs)
         else:
             task["ackedSeq"] = task["totalChunks"]
+            task["downloadPercent"] = 100.0
             task["state"] = DOWNLOADED
             logger.info("任务 %s TCP 侧下载完成（DOWNLOADED）", task["taskId"])
 
