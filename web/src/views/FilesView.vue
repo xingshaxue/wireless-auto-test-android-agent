@@ -136,7 +136,14 @@ function phaseText(t: TransferTask): string {
   const dl = Math.round(t.downloadPercent ?? 0)
   if (t.state === 'COMPLETED') return '完成'
   if (t.state === 'PUSHING' || dl < 100) return `下载中 ${dl}%`
-  return `已下载，传输中 ${Math.round(t.percent)}%`
+  const devBytes = Math.round((t.percent / 100) * t.size)
+  return `已下载，传输中 ${Math.round(t.percent)}%（${formatSize(devBytes)}/${formatSize(t.size)}）`
+}
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + 'MB'
+  if (bytes >= 1024) return (bytes / 1024).toFixed(0) + 'KB'
+  return bytes + 'B'
 }
 
 function stateTagType(state: string): string {
@@ -310,7 +317,7 @@ onBeforeUnmount(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="块" width="90">
+        <el-table-column label="下载块" width="90">
           <template #default="{ row }">{{ row.ackedSeq }}/{{ row.totalChunks }}</template>
         </el-table-column>
         <el-table-column label="errorCode" width="90">
