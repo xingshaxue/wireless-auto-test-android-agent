@@ -27,6 +27,8 @@ public class GattCommand implements QueuedTask {
     public byte[] payload;
     public int timeoutMs = 3000;
     public int maxRetry = 1;
+    /** WRITE 时是否用 Write No Response（对应协议 WRITE_CHAR.writeType）。 */
+    public boolean writeNoResponse = false;
     public Priority priority = Priority.NORMAL;
     public long enqueueTime = SystemClock.elapsedRealtime();
     public long expireTime = Long.MAX_VALUE;

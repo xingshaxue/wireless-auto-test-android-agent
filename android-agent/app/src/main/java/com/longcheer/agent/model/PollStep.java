@@ -13,6 +13,8 @@ public class PollStep {
     public byte[] payload;
     public int timeoutMs = 3000;
     public int maxRetry = 1;
+    /** WRITE 时是否用 Write No Response（LC 产测等只支持 WRITE_NR 的特征必须置 true）。 */
+    public boolean writeNoResponse = false;
 
     public PollStep() {
     }

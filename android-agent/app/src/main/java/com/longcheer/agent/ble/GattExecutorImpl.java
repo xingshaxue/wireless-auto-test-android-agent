@@ -77,6 +77,7 @@ public class GattExecutorImpl implements GattExecutor {
         PollStep step = new PollStep(command.getType(), command.getServiceUuid(),
                 command.getCharUuid(), command.getPayload(),
                 command.getTimeoutMs(), command.getMaxRetry());
+        step.writeNoResponse = command.writeNoResponse;
         GattResult result = executeStepWithRetry(command.getDeviceMac(), step);
         AgentLog.d(TAG, "command " + command.getType() + " mac=" + command.getDeviceMac()
                 + " -> " + result);

@@ -49,8 +49,10 @@ public class GattTransportImpl implements GattTransport {
         CompletableFuture<GattResult> future = responseBus.begin(deviceMac, step.charUuid, op);
         try {
             if (step.type == GattCommand.Type.WRITE) {
-                // §7.6：NO_RESPONSE 语义（文件分块用），普通命令默认带响应写。
-                client.writeCharacteristic(service, step.charUuid, step.payload, false);
+                // §7.6：writeType 由命令指定——WRITE_NR 特征（如 LC 产测通道）必须
+                // NO_RESPONSE，否则对端按 ATT 0xFC 拒绝（真机实测）。
+                client.writeCharacteristic(service, step.charUuid, step.payload,
+                        step.writeNoResponse);
             } else {
                 client.readCharacteristic(service, step.charUuid);
             }

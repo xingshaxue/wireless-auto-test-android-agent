@@ -193,6 +193,7 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         byte[] payload = payloadB64 == null ? null : java.util.Base64.getDecoder().decode(payloadB64);
         GattCommand cmd = GattCommand.simple(mac, requestId, GattCommand.Type.WRITE, service, characteristic,
                 payload, GattCommand.Priority.HIGH);
+        cmd.writeNoResponse = "NO_RESPONSE".equalsIgnoreCase(stringValue(command.get("writeType")));
         enqueueCommandWithBackpressure(controller, cmd, requestId, mac);
     }
 
