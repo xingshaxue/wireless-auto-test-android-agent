@@ -32,6 +32,7 @@ DEFAULT_GLOBALS: dict[str, int] = {
     "gattTimeoutMs": 3000,
     "maxReconnectAttempts": 5,
     "reconnectBackoffMaxMs": 60000,
+    "errorRetryMs": 60000,
     "notifyMinReportIntervalMs": 200,
     "maxConcurrentTransfers": 1,
     "diskQuotaMb": 1024,

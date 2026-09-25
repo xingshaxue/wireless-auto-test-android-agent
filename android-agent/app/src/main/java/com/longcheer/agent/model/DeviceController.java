@@ -86,6 +86,9 @@ public interface DeviceController {
     /** 放弃重连（超 maxReconnectAttempts）：RECONNECTING → ERROR（§7.5 第 6 条）。 */
     void onReconnectGiveUp();
 
+    /** ERROR 慢速自愈（§7.5 扩展）：ERROR → REGISTERED，仅 ERROR 态生效。 */
+    void recoverFromError();
+
     /** 清空待执行队列并返回全部任务（REMOVE/RESET 逐条回 2004 用，§7.7/§7.8）。 */
     java.util.List<QueuedTask> drainPendingCommands();
 

@@ -230,9 +230,16 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
         int attempt = reconnectAttempts.getOrDefault(deviceMac, 0) + 1;
         reconnectAttempts.put(deviceMac, attempt);
         if (attempt > config.getMaxReconnectAttempts()) {
-            // §7.5 第 6 条：超过最大重试次数进入 ERROR。
-            AgentLog.w(TAG, "reconnect give up after " + attempt + " attempts: " + deviceMac);
+            // §7.5 第 6 条：超过最大重试次数进入 ERROR。ERROR 非终态——可穿戴设备
+            // 离场/休眠/退出产测是常态，errorRetryMs 后自动复位计数并慢速自愈重试。
+            AgentLog.w(TAG, "reconnect give up after " + attempt + " attempts: " + deviceMac
+                    + ", auto retry in " + config.getErrorRetryMs() + "ms");
             controller.onReconnectGiveUp();
+            ScheduledExecutorService s = scheduler;
+            if (s != null) {
+                s.schedule(() -> onErrorRetryExpired(deviceMac),
+                        config.getErrorRetryMs(), TimeUnit.MILLISECONDS);
+            }
             return;
         }
         // §16.5：指数退避 1s、2s、4s……封顶 reconnectBackoffMaxMs。
@@ -245,12 +252,33 @@ public class ConnectionSchedulerImpl implements ConnectionScheduler {
         }
     }
 
+    @Override
+    public void resetReconnectAttempts(String mac) {
+        reconnectAttempts.remove(mac);
+    }
+
+    /**
+     * ERROR 慢速自愈到期：复位重连计数并把设备从 ERROR 捞回 REGISTERED，
+     * 之后的常驻自愈 tick / 轮询 tick 会自然重新申请槽位。
+     */
+    void onErrorRetryExpired(String deviceMac) {
+        DeviceController controller = deviceRegistry.findByMac(deviceMac);
+        if (controller == null) {
+            return;
+        }
+        if (controller.getState() != DeviceState.ERROR) {
+            return; // 已被手动恢复/移除/重建，不做二次干预
+        }
+        AgentLog.i(TAG, "error retry expired, recover: " + deviceMac);
+        reconnectAttempts.remove(deviceMac);
+        controller.recoverFromError();
+    }
+
     /**
      * 退避到期（包可见，单测直接驱动）：经 WAITING_SLOT 按欠账任务最高优先级重新申请槽位
      * （§7.5 第 4 条；不允许绕过调度直接连，§4.1）。
      */
-    void onReconnectBackoffExpired(String deviceMac) {
-        DeviceController controller = deviceRegistry.findByMac(deviceMac);
+    void onReconnectBackoffExpired(String deviceMac) {        DeviceController controller = deviceRegistry.findByMac(deviceMac);
         if (controller == null) {
             return;
         }

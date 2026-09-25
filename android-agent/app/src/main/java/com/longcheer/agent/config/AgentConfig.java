@@ -28,6 +28,8 @@ public final class AgentConfig {
     private final long gattTimeoutMs;
     private final int maxReconnectAttempts;
     private final long reconnectBackoffMaxMs;
+    /** ERROR 后的慢速自愈重试间隔（§7.5 扩展：ERROR 非终态，可穿戴离场/休眠是常态）。 */
+    private final long errorRetryMs;
     private final long notifyMinReportIntervalMs;
     private final int maxConcurrentTransfers;
     private final int diskQuotaMb;
@@ -51,6 +53,7 @@ public final class AgentConfig {
                        long gattTimeoutMs,
                        int maxReconnectAttempts,
                        long reconnectBackoffMaxMs,
+                       long errorRetryMs,
                        long notifyMinReportIntervalMs,
                        int maxConcurrentTransfers,
                        int diskQuotaMb,
@@ -73,6 +76,7 @@ public final class AgentConfig {
         this.gattTimeoutMs = gattTimeoutMs;
         this.maxReconnectAttempts = maxReconnectAttempts;
         this.reconnectBackoffMaxMs = reconnectBackoffMaxMs;
+        this.errorRetryMs = errorRetryMs;
         this.notifyMinReportIntervalMs = notifyMinReportIntervalMs;
         this.maxConcurrentTransfers = maxConcurrentTransfers;
         this.diskQuotaMb = diskQuotaMb;
@@ -116,6 +120,7 @@ public final class AgentConfig {
                 json.optLong("gattTimeoutMs", 3000L),
                 json.optInt("maxReconnectAttempts", 5),
                 json.optLong("reconnectBackoffMaxMs", 60000L),
+                json.optLong("errorRetryMs", 60000L),
                 json.optLong("notifyMinReportIntervalMs", 200L),
                 json.optInt("maxConcurrentTransfers", 1),
                 json.optInt("diskQuotaMb", 1024),
@@ -184,6 +189,10 @@ public final class AgentConfig {
 
     public long getReconnectBackoffMaxMs() {
         return reconnectBackoffMaxMs;
+    }
+
+    public long getErrorRetryMs() {
+        return errorRetryMs;
     }
 
     public long getNotifyMinReportIntervalMs() {

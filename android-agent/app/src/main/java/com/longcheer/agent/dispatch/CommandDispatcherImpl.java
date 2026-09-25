@@ -436,6 +436,7 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         if (fileTransferManager != null) {
             fileTransferManager.resumeTransferForDevice(mac);
         }
+        connectionScheduler.resetReconnectAttempts(mac);
         controller.resume();
         stateReporter.reportCommandAck(requestId, 0, null);
     }

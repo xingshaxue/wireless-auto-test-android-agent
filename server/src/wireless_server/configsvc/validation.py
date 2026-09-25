@@ -132,6 +132,7 @@ _GLOBAL_RANGES: dict[str, tuple[float | None, float | None]] = {
     "gattTimeoutMs": (1, None),
     "maxReconnectAttempts": (0, None),
     "reconnectBackoffMaxMs": (1, None),
+    "errorRetryMs": (1000, None),
     "notifyMinReportIntervalMs": (1, None),
     "maxConcurrentTransfers": (1, 2),  # §16.4 建议 1~2
     "diskQuotaMb": (1, None),

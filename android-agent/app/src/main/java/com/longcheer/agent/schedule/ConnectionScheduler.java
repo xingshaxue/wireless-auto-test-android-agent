@@ -32,6 +32,9 @@ public interface ConnectionScheduler {
 
     void setPersistent(String mac, boolean on);
 
+    /** 清零重连计数（手动恢复/命令介入时调用，避免存量计数导致下次秒进 ERROR）。 */
+    void resetReconnectAttempts(String mac);
+
     void pin(String mac, String reason);
 
     void unpin(String mac);

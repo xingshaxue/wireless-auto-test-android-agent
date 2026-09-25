@@ -559,6 +559,15 @@ public class DeviceControllerImpl implements DeviceController {
     }
 
     @Override
+    public void recoverFromError() {
+        synchronized (lock) {
+            if (info.getState() == DeviceState.ERROR) {
+                transitionTo(DeviceState.REGISTERED);
+            }
+        }
+    }
+
+    @Override
     public List<QueuedTask> drainPendingCommands() {
         synchronized (lock) {
             List<QueuedTask> drained = new ArrayList<>(info.getPendingCommands());

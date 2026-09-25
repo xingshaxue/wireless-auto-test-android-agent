@@ -1167,6 +1167,13 @@ public class AgentService extends Service {
         }
 
         @Override
+        public void recoverFromError() {
+            if (state == DeviceState.ERROR) {
+                state = DeviceState.REGISTERED;
+            }
+        }
+
+        @Override
         public List<com.longcheer.agent.model.QueuedTask> drainPendingCommands() {
             return new ArrayList<>();
         }
@@ -1303,6 +1310,11 @@ public class AgentService extends Service {
         @Override
         public void setPersistent(String mac, boolean on) {
             Log.d(TAG, "StubConnectionScheduler.setPersistent " + mac + "=" + on);
+        }
+
+        @Override
+        public void resetReconnectAttempts(String mac) {
+            Log.d(TAG, "StubConnectionScheduler.resetReconnectAttempts " + mac);
         }
 
         @Override
