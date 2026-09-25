@@ -207,7 +207,8 @@ public class LcProtoTransferAdapterTest {
 
         // B.2：协商 retrans='0'（全新传输）
         assertEquals("300", ascii(client.writes.get(0)));
-        assertEquals("33 OTA,/data/ota.bin,10000", ascii(client.writes.get(1)));
+        // 真机校准：33+格式名(bin) 无空格；fileId 已带 .bin 不重复追加
+        assertEquals("33bin,/data/ota.bin,10000", ascii(client.writes.get(1)));
         // B.3：握手改写分块参数（4480B 块、窗口恒 1）
         assertEquals(4480, task.getChunkSize());
         assertEquals(1, task.getWindowSize());

@@ -137,8 +137,11 @@ public class LcProtoTransferAdapter implements TransferAdapter {
             throw new TransferException("negotiate rejected: " + resp);
         }
 
-        // B.2/B.7：通知开始传输；filePath 带 .bin 后缀被固件标记为 OTA 文件。
-        writeAscii("33 OTA,/data/" + task.getFileId() + "," + task.getTotalSize());
+        // 真机校准（2026-09-25 p67 FACTEST）：命令格式为 "33"+格式名+",/data/<文件>,<size>"，
+        // 无空格（"33 OTA," 会被固件 open error:-1 拒绝）；.bin 后缀被固件标记为 OTA 文件。
+        String remoteName = task.getFileId().endsWith(".bin")
+                ? task.getFileId() : task.getFileId() + ".bin";
+        writeAscii("33bin,/data/" + remoteName + "," + task.getTotalSize());
         long deadline = nowMs() + HANDSHAKE_TIMEOUT_MS;
         while (true) {
             resp = awaitAscii(Math.max(1, deadline - nowMs()));
