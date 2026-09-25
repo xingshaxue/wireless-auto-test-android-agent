@@ -92,6 +92,10 @@ class Store:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(_SCHEMA)
+        # 存量库迁移：config_versions 增加内容哈希列（配置未变化时复用版本号）。
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(config_versions)")}
+        if "content_hash" not in cols:
+            conn.execute("ALTER TABLE config_versions ADD COLUMN content_hash TEXT")
         conn.commit()
         self._conn = conn
 
@@ -212,18 +216,19 @@ class Store:
 
     # ---------------- 配置版本（§16.4 configVersion 单调递增） ----------------
 
-    async def next_config_version(self, agent_id: str) -> int:
-        """原子自增并返回新版本号，首值为 1。"""
-        return await asyncio.to_thread(self._next_config_version, agent_id)
+    async def next_config_version(self, agent_id: str, content_hash: str | None = None) -> int:
+        """原子自增并返回新版本号，首值为 1；同时记录配置内容哈希。"""
+        return await asyncio.to_thread(self._next_config_version, agent_id, content_hash)
 
-    def _next_config_version(self, agent_id: str) -> int:
+    def _next_config_version(self, agent_id: str, content_hash: str | None = None) -> int:
         conn = self._require_conn()
         conn.execute("BEGIN IMMEDIATE")
         try:
             conn.execute(
-                "INSERT INTO config_versions (agent_id, version) VALUES (?, 1)"
-                " ON CONFLICT(agent_id) DO UPDATE SET version = version + 1",
-                (agent_id,),
+                "INSERT INTO config_versions (agent_id, version, content_hash) VALUES (?, 1, ?)"
+                " ON CONFLICT(agent_id) DO UPDATE SET version = version + 1,"
+                " content_hash = excluded.content_hash",
+                (agent_id, content_hash),
             )
             version = conn.execute(
                 "SELECT version FROM config_versions WHERE agent_id = ?", (agent_id,)
@@ -233,6 +238,18 @@ class Store:
             conn.rollback()
             raise
         return int(version)
+
+    async def config_fingerprint(self, agent_id: str) -> tuple[str | None, int]:
+        """(上次配置内容哈希, 当前版本号)；无记录返回 (None, 0)。"""
+        return await asyncio.to_thread(self._config_fingerprint, agent_id)
+
+    def _config_fingerprint(self, agent_id: str) -> tuple[str | None, int]:
+        row = self._require_conn().execute(
+            "SELECT content_hash, version FROM config_versions WHERE agent_id = ?", (agent_id,)
+        ).fetchone()
+        if row is None:
+            return None, 0
+        return row[0], int(row[1])
 
     async def current_config_version(self, agent_id: str) -> int:
         """无记录返回 0。"""

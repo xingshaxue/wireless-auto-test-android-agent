@@ -122,17 +122,24 @@ async def test_store_requires_init():
 # ---------------- ConfigManager：build_config 装配 ----------------
 
 async def test_build_config_defaults_and_version(manager):
-    """缺省项按 §16.4 默认值补齐；configVersion 连续 build 单调递增 1,2,3…。"""
+    """缺省项按 §16.4 默认值补齐；内容不变时 configVersion 复用，变化才自增。"""
     c1 = await manager.build_config(AGENT)
     assert c1["configVersion"] == 1
     for key, default in DEFAULT_GLOBALS.items():
         assert c1[key] == default, key
     assert c1["devices"] == []
 
+    # 内容未变：重连/重注册反复 build 不再空转版本号
     c2 = await manager.build_config(AGENT)
     c3 = await manager.build_config(AGENT)
-    assert (c2["configVersion"], c3["configVersion"]) == (2, 3)
-    assert await manager.current_version(AGENT) == 3
+    assert (c2["configVersion"], c3["configVersion"]) == (1, 1)
+    assert await manager.current_version(AGENT) == 1
+
+    # 内容变化：版本自增
+    await manager.set_global_params({"timeSliceMs": 3000})
+    c4 = await manager.build_config(AGENT)
+    assert c4["configVersion"] == 2
+    assert await manager.current_version(AGENT) == 2
 
 
 async def test_build_config_stored_params_override_defaults(manager):

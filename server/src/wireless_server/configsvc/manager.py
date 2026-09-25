@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from typing import Any
 
@@ -53,7 +55,10 @@ class ConfigManager:
     # ---------------- 配置装配 ----------------
 
     async def build_config(self, agent_id: str) -> dict[str, Any]:
-        """装配 §16.4 全量配置：默认值补齐 + devices 全量 + configVersion 原子自增。
+        """装配 §16.4 全量配置：默认值补齐 + devices 全量。
+
+        configVersion 按内容哈希决定去留：配置内容与上次下发一致时复用旧版本号
+        （重注册/重连不再空转版本），有实质变化才原子自增。
 
         tickIntervalMs 超界时按 §16.4 钳制（只影响下发内容，不回写存储）；
         intervalMs 小于一轮时长的设备产生告警日志（§6.4）。
@@ -67,7 +72,15 @@ class ConfigManager:
         for w in warnings:
             logger.warning("配置告警: %s", w)
 
-        version = await self._store.next_config_version(agent_id)
+        digest = hashlib.sha256(
+            json.dumps({"params": params, "devices": devices},
+                       sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        stored_hash, current = await self._store.config_fingerprint(agent_id)
+        if stored_hash == digest and current > 0:
+            version = current
+        else:
+            version = await self._store.next_config_version(agent_id, digest)
         return {"configVersion": version, **params, "devices": devices}
 
     async def current_version(self, agent_id: str) -> int:

@@ -63,14 +63,16 @@ public class TcpClientImpl implements TcpClient {
 
     @Override
     public void connect(String host, int port) {
+        boolean targetChanged = !host.equals(this.host) || port != this.port;
         this.host = host;
         this.port = port;
         if (started.compareAndSet(false, true)) {
             startThreads();
-        } else {
-            // 已在运行：唤醒重连线程，立即按新目标连接（否则要等退避到期）。
+        } else if (targetChanged) {
+            // 目标变更：唤醒重连线程立即按新目标连接（否则要等退避到期）。
+            // 同目标重复调用（如 onConnected 里的再注册）不干预，避免自我打断。
             Thread t = connectThread;
-            if (t != null) {
+            if (t != null && t != Thread.currentThread()) {
                 t.interrupt();
             }
         }

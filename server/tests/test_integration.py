@@ -201,11 +201,11 @@ async def test_full_flow(runtime, api):
     assert result["requestId"] == cmd["requestId"]
     assert result["result"] == {"value": "Vw=="}
 
-    # ---- 二次注册（重连踢旧连接）→ configVersion 递增为 2 ----
+    # ---- 二次注册（重连踢旧连接）：配置内容未变 → configVersion 复用旧值 ----
     agent2 = await FakeAgent.connect(runtime.gateway_port)
     await agent2.send(_register_msg())
     ack2 = await agent2.recv_json()
-    assert ack2["config"]["configVersion"] == 2
+    assert ack2["config"]["configVersion"] == 1
     await agent.read_eof()  # 旧连接被踢
     await agent.close()
     await agent2.close()
