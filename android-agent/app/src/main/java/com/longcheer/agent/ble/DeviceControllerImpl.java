@@ -54,6 +54,8 @@ public class DeviceControllerImpl implements DeviceController {
     private int notifySubscribeIndex = 0;
     private int serviceDiscoveryRetries = 0;
     private int lastGattStatus = 0;
+    /** 建连代数：每次 startRealConnect 自增，用于作废上一轮残留的看门狗。 */
+    private int connectGeneration = 0;
 
     public DeviceControllerImpl(String deviceId, String mac) {
         this(deviceId, mac, null);
@@ -190,13 +192,21 @@ public class DeviceControllerImpl implements DeviceController {
         AgentLog.i(TAG, "connecting " + info.getMac());
         client = deps.clientFactory.create(info.getMac(), gattCallback);
         client.connect();
-        deps.watchdogExecutor.schedule(this::onConnectWatchdog,
+        final int generation = ++connectGeneration;
+        deps.watchdogExecutor.schedule(() -> onConnectWatchdog(generation),
                 deps.config.getConnectTimeoutMs(), java.util.concurrent.TimeUnit.MILLISECONDS);
     }
 
-    /** 建连硬超时看门狗（§7.2 connectTimeoutMs，包可见供单测）。 */
+    /** 建连硬超时看门狗（§7.2 connectTimeoutMs，包可见供单测）：按当前代数驱动。 */
     void onConnectWatchdog() {
+        onConnectWatchdog(connectGeneration);
+    }
+
+    private void onConnectWatchdog(int generation) {
         synchronized (lock) {
+            if (generation != connectGeneration) {
+                return; // 上一轮建连残留的看门狗，避免误杀新一轮 CONNECTING
+            }
             DeviceState state = info.getState();
             if (state != DeviceState.CONNECTING && state != DeviceState.SERVICE_DISCOVERING
                     && state != DeviceState.CONFIGURING) {
