@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import ValidationError
 
 from ..engine.runner import AgentBusyError
@@ -290,6 +291,21 @@ def build_router(runtime: "Runtime") -> APIRouter:
     async def list_files() -> list[dict[str, Any]]:
         return await store.list_files()
 
+    @router.get("/files/{file_id}/download")
+    async def download_file(file_id: str):
+        """下载已登记文件（上传件与设备导出件通用）；路径须落在 files_dir 内。"""
+        record = await store.get_file(file_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="文件不存在")
+        try:
+            p = Path(record["path"]).resolve()
+            root = Path(runtime.settings.storage.files_dir).resolve()
+        except OSError:
+            raise HTTPException(status_code=404, detail="文件路径非法")
+        if not p.is_relative_to(root) or not p.is_file():
+            raise HTTPException(status_code=404, detail="文件不在 files_dir 内或已丢失")
+        return FileResponse(str(p), filename=record["name"])
+
     @router.delete("/files/{file_id}")
     async def delete_file(file_id: str) -> dict[str, Any]:
         record = await store.get_file(file_id)
@@ -350,6 +366,25 @@ def build_router(runtime: "Runtime") -> APIRouter:
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e))
         return {"requestId": request_id}
+
+    # ---------------- 设备文件导出（docs/02 B.6，DUT→手机→server） ----------------
+
+    @router.post("/exports")
+    async def start_export(body: dict[str, Any]) -> dict[str, Any]:
+        """下发 FILE_EXPORT：agent 从设备拉文件并回传入库；exportId 服务端生成返回。"""
+        transfer = _transfer()
+        agent_id = body.get("agentId")
+        device_mac = body.get("deviceMac")
+        remote_path = body.get("remotePath")
+        if not agent_id or not device_mac or not remote_path:
+            raise HTTPException(status_code=422,
+                                detail="缺少 agentId / deviceMac / remotePath")
+        try:
+            export_id = await transfer.request_export(
+                agent_id, device_mac, remote_path)
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return {"exportId": export_id}
 
     # ---------------- 测试编排（§14） ----------------
 

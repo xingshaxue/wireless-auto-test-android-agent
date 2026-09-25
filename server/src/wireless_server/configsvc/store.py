@@ -51,7 +51,9 @@ CREATE TABLE IF NOT EXISTS files (
     size       INTEGER NOT NULL,
     sha256     TEXT NOT NULL,
     path       TEXT NOT NULL,
-    created_ts INTEGER NOT NULL
+    created_ts INTEGER NOT NULL,
+    origin     TEXT NOT NULL DEFAULT 'upload',
+    meta_json  TEXT NOT NULL DEFAULT '{}'
 );
 CREATE TABLE IF NOT EXISTS test_runs (
     run_id      TEXT PRIMARY KEY,
@@ -102,6 +104,16 @@ class Store:
         if "transfer_channel" not in cols:
             conn.execute(
                 "ALTER TABLE devices ADD COLUMN transfer_channel TEXT NOT NULL DEFAULT 'ble'"
+            )
+        # 存量库迁移：files 增加来源列（设备导出 origin='device'）与元信息列。
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(files)")}
+        if "origin" not in cols:
+            conn.execute(
+                "ALTER TABLE files ADD COLUMN origin TEXT NOT NULL DEFAULT 'upload'"
+            )
+        if "meta_json" not in cols:
+            conn.execute(
+                "ALTER TABLE files ADD COLUMN meta_json TEXT NOT NULL DEFAULT '{}'"
             )
         conn.commit()
         self._conn = conn
@@ -307,23 +319,33 @@ class Store:
     # ---------------- 文件登记（§7.6 待下发文件台账） ----------------
 
     async def register_file(self, file_id: str, name: str, size: int,
-                            sha256_b64: str, path: str) -> None:
-        """登记待下发文件（sha256_b64 = base64 的 32 字节整体哈希，§16.3）。"""
+                            sha256_b64: str, path: str,
+                            origin: str = "upload",
+                            meta: dict[str, Any] | None = None) -> None:
+        """登记文件（sha256_b64 = base64 的 32 字节整体哈希，§16.3）。
+
+        origin：'upload' = web 上传待下发；'device' = 设备导出（FILE_EXPORT 回传）。
+        meta：来源元信息（如 exportId/deviceMac/agentId）。
+        """
         await asyncio.to_thread(
-            self._register_file, file_id, name, size, sha256_b64, path)
+            self._register_file, file_id, name, size, sha256_b64, path, origin, meta)
 
     def _register_file(self, file_id: str, name: str, size: int,
-                       sha256_b64: str, path: str) -> None:
+                       sha256_b64: str, path: str, origin: str,
+                       meta: dict[str, Any] | None) -> None:
         import time
 
         conn = self._require_conn()
         conn.execute(
-            "INSERT INTO files (file_id, name, size, sha256, path, created_ts)"
-            " VALUES (?, ?, ?, ?, ?, ?)"
+            "INSERT INTO files (file_id, name, size, sha256, path, created_ts,"
+            " origin, meta_json)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(file_id) DO UPDATE SET"
             " name=excluded.name, size=excluded.size, sha256=excluded.sha256,"
-            " path=excluded.path, created_ts=excluded.created_ts",
-            (file_id, name, size, sha256_b64, path, int(time.time() * 1000)),
+            " path=excluded.path, created_ts=excluded.created_ts,"
+            " origin=excluded.origin, meta_json=excluded.meta_json",
+            (file_id, name, size, sha256_b64, path, int(time.time() * 1000),
+             origin, json.dumps(meta or {}, ensure_ascii=False)),
         )
         conn.commit()
 
@@ -332,6 +354,7 @@ class Store:
         return {
             "fileId": row[0], "name": row[1], "size": row[2],
             "sha256": row[3], "path": row[4], "createdTs": row[5],
+            "origin": row[6], "meta": json.loads(row[7]),
         }
 
     async def get_file(self, file_id: str) -> dict[str, Any] | None:
@@ -339,7 +362,7 @@ class Store:
 
     def _get_file(self, file_id: str) -> dict[str, Any] | None:
         row = self._require_conn().execute(
-            "SELECT file_id, name, size, sha256, path, created_ts"
+            "SELECT file_id, name, size, sha256, path, created_ts, origin, meta_json"
             " FROM files WHERE file_id = ?",
             (file_id,),
         ).fetchone()
@@ -350,7 +373,7 @@ class Store:
 
     def _list_files(self) -> list[dict[str, Any]]:
         rows = self._require_conn().execute(
-            "SELECT file_id, name, size, sha256, path, created_ts"
+            "SELECT file_id, name, size, sha256, path, created_ts, origin, meta_json"
             " FROM files ORDER BY created_ts"
         ).fetchall()
         return [self._row_to_file(r) for r in rows]

@@ -1,4 +1,4 @@
-"""protocol 包单测：19 条命令序列化 / 18 类事件解析 / 错误码表。"""
+"""protocol 包单测：20 条命令序列化 / 19 类事件解析 / 错误码表。"""
 
 import base64
 
@@ -28,15 +28,15 @@ def _wire(cmd: Envelope) -> dict:
     return w
 
 
-# ---------------- 19 条命令逐字段序列化 ----------------
+# ---------------- 20 条命令逐字段序列化 ----------------
 
-def test_all_19_commands_registered():
-    assert len(COMMAND_TYPES) == 19
+def test_all_20_commands_registered():
+    assert len(COMMAND_TYPES) == 20
     assert set(COMMAND_TYPES) == {
         "REGISTER_ACK", "CONNECT_DEVICE", "DISCONNECT_DEVICE", "REMOVE_DEVICE",
         "RESUME_DEVICE", "START_POLLING", "STOP_POLLING", "READ_CHAR",
         "WRITE_CHAR", "SET_POLLING_INTERVAL", "SET_POLL_RULES", "FILE_TRANSFER",
-        "FILE_CANCEL", "SET_MAX_CONNECTIONS", "SET_PERSISTENT_DEVICE",
+        "FILE_CANCEL", "FILE_EXPORT", "SET_MAX_CONNECTIONS", "SET_PERSISTENT_DEVICE",
         "PAUSE_DEVICE", "UPLOAD_LOG", "GET_STATUS", "RESET",
     }
 
@@ -124,6 +124,17 @@ def test_file_cancel():
     assert set(w) == ENVELOPE_KEYS | {"taskId"}
 
 
+def test_file_export():
+    # FILE_EXPORT（docs/02 B.6）：remotePath 以 / 结尾 = 目录模式；exportId 可选。
+    w = _wire(build_command("FILE_EXPORT", deviceMac=MAC, remotePath="/logs/",
+                            exportId="export-abc12345"))
+    assert w["type"] == "FILE_EXPORT"
+    assert w["deviceMac"] == MAC and w["remotePath"] == "/logs/"
+    assert w["exportId"] == "export-abc12345"
+    w2 = _wire(build_command("FILE_EXPORT", deviceMac=MAC, remotePath="/data/a.bin"))
+    assert "exportId" not in w2  # 缺省由 agent 生成
+
+
 def test_set_max_connections():
     w = _wire(build_command("SET_MAX_CONNECTIONS", maxSlots=5))
     assert set(w) == ENVELOPE_KEYS | {"maxSlots"}
@@ -173,10 +184,10 @@ def test_command_rejects_extra_fields():
         build_command("GET_STATUS", typoField=1)
 
 
-# ---------------- 18 类事件 parse_event 往返 ----------------
+# ---------------- 19 类事件 parse_event 往返 ----------------
 
-def test_all_20_event_types_registered():
-    assert len(EVENT_TYPES) == 20  # 18 类，SLOT_ACQUIRED/RELEASED 与 PAUSED/RESUMED 为独立 type
+def test_all_21_event_types_registered():
+    assert len(EVENT_TYPES) == 21  # 19 类，SLOT_ACQUIRED/RELEASED 与 PAUSED/RESUMED 为独立 type
 
 
 def _roundtrip(raw: dict) -> dict:
@@ -321,6 +332,16 @@ def test_parse_log_upload_done():
     raw = {"type": "LOG_UPLOAD_DONE", "timestamp": 1, "requestId": "rid-9",
            "errorCode": 0, "size": 1048576}
     assert _roundtrip(raw) == raw
+
+
+def test_parse_export_result():
+    raw = {"type": "EXPORT_RESULT", "timestamp": 1, "exportId": "export-abc12345",
+           "deviceMac": MAC, "files": [{"name": "a.bin", "size": 300}],
+           "errorCode": 0}
+    assert _roundtrip(raw) == raw
+    failed = {"type": "EXPORT_RESULT", "timestamp": 2, "exportId": "export-x",
+              "errorCode": 4003, "detail": "061 无响应", "files": []}
+    assert _roundtrip(failed) == failed  # deviceMac 可选
 
 
 def test_parse_unknown_event_returns_unknown_not_raise():

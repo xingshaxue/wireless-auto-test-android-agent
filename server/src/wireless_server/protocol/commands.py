@@ -1,4 +1,4 @@
-"""服务器 → Android 命令模型（SDD 附录 A.2，共 19 条）。
+"""服务器 → Android 命令模型（SDD 附录 A.2，共 20 条）。
 
 编码约定（附录 A.1）：byte[] 一律 base64 字符串；MAC 大写冒号格式；
 枚举字段取枚举名字符串；公共信封 type/timestamp/requestId 由 Envelope 基类承载。
@@ -133,6 +133,19 @@ class FileCancel(Envelope):
     taskId: str
 
 
+class FileExport(Envelope):
+    """FILE_EXPORT — 从设备拉取文件（LC 产测通道 061/062/063，docs/02 B.6）。
+
+    remotePath 以 "/" 结尾 = 目录模式（AT^LS 列举 + 逐文件导出）；
+    exportId 缺省由 agent 生成（"export-<8位hex>"），结果走 EXPORT_RESULT 事件。
+    """
+
+    type: Literal["FILE_EXPORT"] = "FILE_EXPORT"
+    deviceMac: str
+    remotePath: str
+    exportId: str | None = None
+
+
 class SetMaxConnections(Envelope):
     """SET_MAX_CONNECTIONS — maxSlots 合法区间 2~5；越界或驱逐失败由 Agent 回 3003（5.4）。"""
 
@@ -180,7 +193,7 @@ COMMAND_TYPES: dict[str, type[Envelope]] = {
     for cls in (
         RegisterAck, ConnectDevice, DisconnectDevice, RemoveDevice, ResumeDevice,
         StartPolling, StopPolling, ReadChar, WriteChar, SetPollingInterval,
-        SetPollRules, FileTransfer, FileCancel, SetMaxConnections,
+        SetPollRules, FileTransfer, FileCancel, FileExport, SetMaxConnections,
         SetPersistentDevice, PauseDevice, UploadLog, GetStatus, Reset,
     )
 }

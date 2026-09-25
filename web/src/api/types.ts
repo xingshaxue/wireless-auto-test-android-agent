@@ -129,6 +129,15 @@ export interface FileRecord {
   sha256: string
   path: string
   createdTs: number
+  /** 来源：upload = web 上传待下发；device = 设备导出（FILE_EXPORT 回传） */
+  origin: string
+  /** 来源元信息（device 来源带 exportId/deviceMac/agentId） */
+  meta: Record<string, unknown>
+}
+
+/** POST /api/exports 成功响应 */
+export interface ExportStartResult {
+  exportId: string
 }
 
 /** GET /api/transfers 传输任务（pusher 任务快照） */

@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 import client, { errorDetail } from '../api/client'
-import type { AgentListItem, FileRecord, TransferTask } from '../api/types'
+import type { AgentListItem, ExportStartResult, FileRecord, TransferTask } from '../api/types'
 
 const TERMINAL_STATES = ['COMPLETED', 'FAILED', 'CANCELLED']
 
@@ -61,6 +61,57 @@ async function removeFile(f: FileRecord) {
     fetchFiles()
   } catch (e) {
     ElMessage.error(`删除失败：${errorDetail(e)}`)
+  }
+}
+
+function downloadFile(f: FileRecord) {
+  window.open(`/api/files/${f.fileId}/download`)
+}
+
+// ---------------- 从设备拉取（FILE_EXPORT，docs/02 B.6） ----------------
+const exportVisible = ref(false)
+const exportAgentId = ref('')
+const exportMac = ref('')
+const exportPath = ref('')
+const exportIsDir = ref(false)
+const exportSending = ref(false)
+
+// 选中 agent 视图内的设备 MAC 列表；无视图时仍可手输（allow-create）
+const exportMacOptions = computed(() => {
+  const a = agents.value.find((x) => x.agentId === exportAgentId.value)
+  return Object.keys(a?.view?.devices ?? {})
+})
+
+function openExport() {
+  exportAgentId.value = agents.value[0]?.agentId ?? ''
+  exportMac.value = ''
+  exportPath.value = ''
+  exportIsDir.value = false
+  exportVisible.value = true
+  fetchAgents()
+}
+
+async function startExport() {
+  if (!exportAgentId.value || !exportMac.value.trim() || !exportPath.value.trim()) {
+    ElMessage.warning('请填写 agent、设备 MAC 与设备侧路径')
+    return
+  }
+  let remotePath = exportPath.value.trim()
+  if (exportIsDir.value && !remotePath.endsWith('/')) remotePath += '/'
+  exportSending.value = true
+  try {
+    const resp = await client.post<ExportStartResult>('/exports', {
+      agentId: exportAgentId.value,
+      deviceMac: exportMac.value.trim(),
+      remotePath,
+    })
+    ElMessage.success(`导出任务已下发：${resp.data.exportId}（结果稍后入库，可刷新查看）`)
+    exportVisible.value = false
+    fetchFiles()
+  } catch (e) {
+    ElMessage.error(`下发失败：${errorDetail(e)}`)
+  } finally {
+    exportSending.value = false
   }
 }
 
@@ -212,7 +263,11 @@ onMounted(() => {
   fetchFiles()
   fetchTasks()
   fetchAgents()
-  tasksTimer = setInterval(fetchTasks, 2000)
+  // 导出结果异步入库：随任务轮询一并刷新文件列表
+  tasksTimer = setInterval(() => {
+    fetchTasks()
+    fetchFiles()
+  }, 2000)
 })
 onBeforeUnmount(() => {
   if (tasksTimer) clearInterval(tasksTimer)
@@ -226,6 +281,7 @@ onBeforeUnmount(() => {
         <div class="card-header">
           <span>文件管理</span>
           <div class="header-actions">
+            <el-button size="small" @click="openExport">从设备拉取</el-button>
             <el-button size="small" @click="openLogUpload">请求日志上传</el-button>
             <el-button size="small" @click="fetchFiles">刷新</el-button>
             <el-upload :show-file-list="false" :http-request="doUpload" class="uploader">
@@ -257,9 +313,17 @@ onBeforeUnmount(() => {
         <el-table-column label="上传时间" min-width="160">
           <template #default="{ row }">{{ fmtTs(row.createdTs) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+        <el-table-column label="来源" width="80">
+          <template #default="{ row }">
+            <el-tag :type="row.origin === 'device' ? 'success' : 'info'" size="small">
+              {{ row.origin === 'device' ? '设备' : '上传' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="250" fixed="right">
           <template #default="{ row }">
             <el-button size="small" type="primary" @click="openTransfer(row)">发起传输</el-button>
+            <el-button size="small" @click="downloadFile(row)">下载</el-button>
             <el-button size="small" type="danger" @click="removeFile(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -358,8 +422,37 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="logVisible" title="请求 agent 日志上传" width="480px">
-      <el-form label-width="140px">
+    <el-dialog v-model="exportVisible" title="从设备拉取文件（FILE_EXPORT）" width="480px">
+      <el-form label-width="110px">
+        <el-form-item label="agentId">
+          <el-select v-model="exportAgentId" placeholder="选择在线 agent" class="full-width">
+            <el-option v-for="a in agents" :key="a.agentId" :label="a.agentId" :value="a.agentId" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="deviceMac">
+          <el-select
+            v-model="exportMac"
+            filterable
+            allow-create
+            placeholder="选择或输入设备 MAC"
+            class="full-width"
+          >
+            <el-option v-for="m in exportMacOptions" :key="m" :label="m" :value="m" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="设备侧路径">
+          <el-input v-model="exportPath" placeholder="/data/a.bin 或 /logs/" />
+        </el-form-item>
+        <el-form-item label="目录模式">
+          <el-checkbox v-model="exportIsDir">路径为目录（AT^LS 列举全部文件）</el-checkbox>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button type="primary" :loading="exportSending" @click="startExport">下发导出</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="logVisible" title="请求 agent 日志上传" width="480px">      <el-form label-width="140px">
         <el-form-item label="agentId">
           <el-select v-model="logAgentId" placeholder="选择在线 agent" class="full-width">
             <el-option v-for="a in agents" :key="a.agentId" :label="a.agentId" :value="a.agentId" />

@@ -63,6 +63,7 @@ public final class AgentAssembler {
         public CommandDispatcher commandDispatcher;
         public PollResultChain pollResultChain;
         public FileTransferManager fileTransferManager;
+        public com.longcheer.agent.transfer.FileExportManager fileExportManager;
         public StatsCollector statsCollector;
     }
 
@@ -192,9 +193,16 @@ public final class AgentAssembler {
                     });
         }
 
+        // 设备文件导出（DUT→手机→server，docs/02 B.6）：LC 通道 061/062/063 协议，
+        // 落盘 filesDir/export/<exportId>/ 后经 TCP EXPORT_FRAME/EXPORT_END 帧回传入库。
+        c.fileExportManager = new com.longcheer.agent.transfer.FileExportManager(
+                c.deviceRegistry, c.connectionScheduler, pollingScheduler, c.stateReporter,
+                config, new File(context.getFilesDir(), "export"), c.tcpClient,
+                () -> new com.longcheer.agent.transfer.LcExporter(c.bleCentralManager, responseBus));
+
         c.commandDispatcher = new CommandDispatcherImpl(c.bleCentralManager, c.deviceRegistry,
                 c.connectionScheduler, c.pollingScheduler, c.stateReporter, config, chain,
-                c.fileTransferManager);
+                c.fileTransferManager, c.fileExportManager);
         AgentLog.i(TAG, "real components assembled" + (simulateDut ? " (simulateDut)" : ""));
         return c;
     }

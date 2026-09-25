@@ -1,7 +1,7 @@
-"""TransferManager：transfer 模块门面，组合 FilePusher + LogReceiver。
+"""TransferManager：transfer 模块门面，组合 FilePusher + LogReceiver + ExportReceiver。
 
-attach(runtime) 挂载：LOG_FRAME 帧处理器 → gateway.on_frame_handlers；
-FILE_*/LOG_UPLOAD_DONE 事件 → ingest listener；agent 断连通知包装进
+attach(runtime) 挂载：LOG_FRAME/EXPORT_* 帧处理器 → gateway.on_frame_handlers；
+FILE_*/LOG_UPLOAD_DONE/EXPORT_RESULT 事件 → ingest listener；agent 断连通知包装进
 gateway.on_disconnect（§7.6 断点续传前提）。
 """
 
@@ -15,6 +15,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .exportrecv import ExportReceiver
 from .logrecv import LogReceiver
 from .pusher import FilePusher
 
@@ -34,11 +35,14 @@ class TransferManager:
             runtime.settings, runtime.store, runtime.ledger, runtime.registry)
         self.logrecv = LogReceiver(
             runtime.settings, runtime.ledger, runtime.registry)
+        self.exportrecv = ExportReceiver(
+            runtime.settings, runtime.ledger, runtime.registry, self.register_file)
 
     # ---------------- 挂载 ----------------
 
     def attach(self, runtime: "Runtime") -> None:
         runtime.gateway.on_frame_handlers.append(self.logrecv.handle_frame)
+        runtime.gateway.on_frame_handlers.append(self.exportrecv.handle_frame)
         runtime.ingest.add_listener(self._on_event)
         prev = runtime.gateway.on_disconnect
 
@@ -53,12 +57,15 @@ class TransferManager:
     def _on_event(self, agent_id: str, etype: str, raw: dict) -> None:
         self.pusher.on_event(agent_id, etype, raw)
         self.logrecv.on_event(agent_id, etype, raw)
+        self.exportrecv.on_event(agent_id, etype, raw)
 
     # ---------------- 文件登记（含配额检查，§7.6 本地存储管理） ----------------
 
     async def register_file(self, path: str | Path,
                             file_id: str | None = None,
-                            name: str | None = None) -> str:
+                            name: str | None = None,
+                            origin: str = "upload",
+                            meta: dict[str, Any] | None = None) -> str:
         """计算 size/SHA-256 并登记入 files 表；files_dir 总量超 files_quota_mb 拒绝。"""
         p = Path(path)
         size, sha256_b64 = await asyncio.to_thread(self._hash_file, p)
@@ -70,9 +77,10 @@ class TransferManager:
                 f" > 配额 {quota}B（files_quota_mb）")
         file_id = file_id or "file-" + uuid.uuid4().hex[:8]
         await self._store.register_file(
-            file_id, name or p.name, size, sha256_b64, str(p))
-        logger.info("登记文件 %s name=%s size=%d path=%s",
-                    file_id, name or p.name, size, p)
+            file_id, name or p.name, size, sha256_b64, str(p),
+            origin=origin, meta=meta)
+        logger.info("登记文件 %s name=%s size=%d origin=%s path=%s",
+                    file_id, name or p.name, size, origin, p)
         return file_id
 
     @staticmethod
@@ -114,6 +122,10 @@ class TransferManager:
                                  min_level: str | None = None) -> str:
         return await self.logrecv.request_log_upload(agent_id, since_ts, min_level)
 
+    async def request_export(self, agent_id: str, device_mac: str,
+                             remote_path: str) -> str:
+        return await self.exportrecv.request_export(agent_id, device_mac, remote_path)
+
     # ---------------- 查询 ----------------
 
     def list_tasks(self) -> list[dict[str, Any]]:
@@ -127,3 +139,4 @@ class TransferManager:
     async def close(self) -> None:
         await self.pusher.close()
         await self.logrecv.close()
+        await self.exportrecv.close()

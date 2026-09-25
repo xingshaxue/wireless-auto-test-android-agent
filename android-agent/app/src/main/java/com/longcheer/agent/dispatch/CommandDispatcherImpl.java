@@ -34,6 +34,7 @@ public class CommandDispatcherImpl implements CommandDispatcher {
     private final AgentConfig config;
     private final com.longcheer.agent.poll.PollResultChain pollResultChain;
     private final com.longcheer.agent.transfer.FileTransferManager fileTransferManager;
+    private final com.longcheer.agent.transfer.FileExportManager fileExportManager;
 
     public CommandDispatcherImpl(BleCentralManager bleCentralManager,
                                  DeviceRegistry deviceRegistry,
@@ -43,6 +44,19 @@ public class CommandDispatcherImpl implements CommandDispatcher {
                                  AgentConfig config,
                                  com.longcheer.agent.poll.PollResultChain pollResultChain,
                                  com.longcheer.agent.transfer.FileTransferManager fileTransferManager) {
+        this(bleCentralManager, deviceRegistry, connectionScheduler, pollingScheduler,
+                stateReporter, config, pollResultChain, fileTransferManager, null);
+    }
+
+    public CommandDispatcherImpl(BleCentralManager bleCentralManager,
+                                 DeviceRegistry deviceRegistry,
+                                 ConnectionScheduler connectionScheduler,
+                                 PollingScheduler pollingScheduler,
+                                 StateReporter stateReporter,
+                                 AgentConfig config,
+                                 com.longcheer.agent.poll.PollResultChain pollResultChain,
+                                 com.longcheer.agent.transfer.FileTransferManager fileTransferManager,
+                                 com.longcheer.agent.transfer.FileExportManager fileExportManager) {
         this.bleCentralManager = bleCentralManager;
         this.deviceRegistry = deviceRegistry;
         this.connectionScheduler = connectionScheduler;
@@ -51,6 +65,7 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         this.config = config;
         this.pollResultChain = pollResultChain;
         this.fileTransferManager = fileTransferManager;
+        this.fileExportManager = fileExportManager;
     }
 
     @Override
@@ -92,6 +107,9 @@ public class CommandDispatcherImpl implements CommandDispatcher {
                 break;
             case "FILE_CANCEL":
                 handleFileCancel(command, requestId);
+                break;
+            case "FILE_EXPORT":
+                handleFileExport(command, requestId, mac);
                 break;
             case "GET_STATUS":
                 handleGetStatus(requestId, mac);
@@ -339,6 +357,27 @@ public class CommandDispatcherImpl implements CommandDispatcher {
             fileTransferManager.cancelTransfer(taskId);
         }
         stateReporter.reportCommandAck(requestId, 0, null);
+    }
+
+    /**
+     * FILE_EXPORT（docs/02 B.6）：从设备拉取文件。remotePath 以 "/" 结尾 = 目录模式；
+     * exportId 缺省生成 "export-<8位hex>"。ACK 即时（受理语义），结果走 EXPORT_RESULT 事件。
+     */
+    private void handleFileExport(Map<String, Object> command, String requestId, String mac) {
+        String remotePath = stringValue(command.get("remotePath"));
+        if (mac == null || remotePath == null || remotePath.isEmpty()) {
+            stateReporter.reportCommandAck(requestId, 2001, "missing deviceMac/remotePath");
+            return;
+        }
+        String exportId = stringValue(command.get("exportId"));
+        if (exportId == null || exportId.isEmpty()) {
+            exportId = "export-" + UUID.randomUUID().toString().replace("-", "").substring(0, 8);
+        }
+        int errorCode = fileExportManager == null ? 2001
+                : fileExportManager.startExport(exportId, mac, remotePath);
+        Map<String, Object> result = errorCode == 0
+                ? Collections.singletonMap("exportId", exportId) : null;
+        stateReporter.reportCommandAck(requestId, errorCode, result);
     }
 
     /** PAUSE_DEVICE 与 pinned 传输的交互（§7.7）：默认挂起，abortTransfer=true 中止。 */

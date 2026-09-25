@@ -24,8 +24,10 @@ import java.util.Map;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
@@ -488,6 +490,69 @@ public class CommandDispatcherTest {
 
         verify(fileTransferManager).cancelTransfer("task-1");
         verify(stateReporter).reportCommandAck("req-16", 0, null);
+    }
+
+    @Test
+    public void testFileExportAcceptedWithServerExportId() {
+        // FILE_EXPORT（docs/02 B.6）：受理即时 ACK，结果走 EXPORT_RESULT 事件。
+        com.longcheer.agent.transfer.FileExportManager exportManager =
+                mock(com.longcheer.agent.transfer.FileExportManager.class);
+        when(exportManager.startExport(eq("export-abc12345"), eq("AA:BB:CC:DD:EE:FF"),
+                eq("/logs/"))).thenReturn(0);
+        CommandDispatcherImpl exportDispatcher = new CommandDispatcherImpl(bleCentralManager,
+                deviceRegistry, connectionScheduler, pollingScheduler, stateReporter, config,
+                pollResultChain, fileTransferManager, exportManager);
+
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "FILE_EXPORT");
+        cmd.put("requestId", "req-20");
+        cmd.put("deviceMac", "AA:BB:CC:DD:EE:FF");
+        cmd.put("remotePath", "/logs/");
+        cmd.put("exportId", "export-abc12345");
+
+        exportDispatcher.dispatch(cmd);
+
+        verify(exportManager).startExport("export-abc12345", "AA:BB:CC:DD:EE:FF", "/logs/");
+        verify(stateReporter).reportCommandAck(eq("req-20"), eq(0),
+                argThat(r -> r instanceof Map
+                        && "export-abc12345".equals(((Map<?, ?>) r).get("exportId"))));
+    }
+
+    @Test
+    public void testFileExportGeneratesExportIdWhenMissing() {
+        // exportId 缺省时 agent 侧生成 "export-<8位hex>" 并随 ACK 返回。
+        com.longcheer.agent.transfer.FileExportManager exportManager =
+                mock(com.longcheer.agent.transfer.FileExportManager.class);
+        when(exportManager.startExport(any(), any(), any())).thenReturn(0);
+        CommandDispatcherImpl exportDispatcher = new CommandDispatcherImpl(bleCentralManager,
+                deviceRegistry, connectionScheduler, pollingScheduler, stateReporter, config,
+                pollResultChain, fileTransferManager, exportManager);
+
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "FILE_EXPORT");
+        cmd.put("requestId", "req-21");
+        cmd.put("deviceMac", "AA:BB:CC:DD:EE:FF");
+        cmd.put("remotePath", "/data/a.bin");
+
+        exportDispatcher.dispatch(cmd);
+
+        ArgumentCaptor<String> idCaptor = ArgumentCaptor.forClass(String.class);
+        verify(exportManager).startExport(idCaptor.capture(), eq("AA:BB:CC:DD:EE:FF"),
+                eq("/data/a.bin"));
+        assertTrue(idCaptor.getValue().matches("export-[0-9a-f]{8}"));
+        verify(stateReporter).reportCommandAck(eq("req-21"), eq(0), any());
+    }
+
+    @Test
+    public void testFileExportMissingPathRejected() {
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "FILE_EXPORT");
+        cmd.put("requestId", "req-22");
+        cmd.put("deviceMac", "AA:BB:CC:DD:EE:FF");
+
+        dispatcher.dispatch(cmd);
+
+        verify(stateReporter).reportCommandAck("req-22", 2001, "missing deviceMac/remotePath");
     }
 
     @Test

@@ -42,7 +42,9 @@ public class FileFrameCodec {
         FILE_FRAME(0x01),
         FILE_END(0x02),
         FILE_ACK(0x03),
-        LOG_FRAME(0x04);
+        LOG_FRAME(0x04),
+        EXPORT_FRAME(0x05),
+        EXPORT_END(0x06);
 
         private final int code;
 

@@ -1,4 +1,4 @@
-"""Android → 服务器事件模型（SDD 附录 A.3，共 18 类 / 20 个 type）。
+"""Android → 服务器事件模型（SDD 附录 A.3，共 19 类 / 21 个 type）。
 
 公共字段 type/timestamp 由 EventEnvelope 承载；requestId 仅 CMD_ACK /
 LOG_UPLOAD_DONE 携带（对账回填，A.1 / 8.4）。解析对 Agent 未来扩展容忍：
@@ -216,6 +216,18 @@ class LogUploadDone(EventEnvelope):
     size: int  # 实际上传字节数
 
 
+class ExportResult(EventEnvelope):
+    """EXPORT_RESULT — 设备文件导出结果（docs/02 B.6；files 为已入库文件清单）。"""
+
+    type: Literal["EXPORT_RESULT"]
+    timestamp: int
+    exportId: str
+    deviceMac: str | None = None
+    files: list[dict[str, Any]] = []
+    errorCode: int
+    detail: str | None = None
+
+
 class UnknownEvent(BaseModel):
     """未知事件类型：Agent 未来扩展的占位模型，完整保留原始字段，不抛错。"""
 
@@ -232,7 +244,7 @@ EVENT_TYPES: dict[str, type[EventEnvelope]] = {
         ConnectionSlotReleased, PollResult, PollDataStale, CmdAck,
         DevicePaused, DeviceResumed, ConnectionStatistics, FileProgress,
         FileResult, ErrorEvent, Topology, FileRequest, FileDownloadReady,
-        FileDownloadAck, FileDownloadResume, LogUploadDone,
+        FileDownloadAck, FileDownloadResume, LogUploadDone, ExportResult,
     )
 }
 

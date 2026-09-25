@@ -6,7 +6,8 @@ import json
 import struct
 
 MAGIC = 0xAC42
-FRAME_TYPES = {0x01: "FILE_FRAME", 0x02: "FILE_END", 0x03: "FILE_ACK", 0x04: "LOG_FRAME"}
+FRAME_TYPES = {0x01: "FILE_FRAME", 0x02: "FILE_END", 0x03: "FILE_ACK", 0x04: "LOG_FRAME",
+               0x05: "EXPORT_FRAME", 0x06: "EXPORT_END"}
 
 # §16.3：单帧 payload ≤ 64KB；单条 JSON ≤ 1MB
 MAX_FRAME_PAYLOAD = 64 * 1024
