@@ -94,6 +94,19 @@ public class LcProtoTransferAdapter implements TransferAdapter {
     /** 固件 ASCII 回包邮箱（Notify 回调线程投入，会话线程阻塞取；已 trim）。 */
     private final BlockingQueue<String> mailbox = new LinkedBlockingQueue<>();
 
+    /**
+     * 33x 打开命令（BLE/SPP 两承载共用）：OTA 包（.zip）固定落 /data/ota.zip；
+     * 其余文件落 /data/<fileId>.bin。真机校准：格式令牌紧随 "33" 无空格。
+     */
+    public static String buildOpenCommand(String fileId, String fileName, long totalSize) {
+        if (fileName != null
+                && fileName.toLowerCase(java.util.Locale.US).endsWith(".zip")) {
+            return "33zip,/data/ota.zip," + totalSize;
+        }
+        String remoteName = fileId.endsWith(".bin") ? fileId : fileId + ".bin";
+        return "33bin,/data/" + remoteName + "," + totalSize;
+    }
+
     public LcProtoTransferAdapter(GattClientProvider clientProvider, GattResponseBus responseBus) {
         this.clientProvider = clientProvider;
         this.responseBus = responseBus;
@@ -139,9 +152,7 @@ public class LcProtoTransferAdapter implements TransferAdapter {
 
         // 真机校准（2026-09-25 p67 FACTEST）：命令格式为 "33"+格式名+",/data/<文件>,<size>"，
         // 无空格（"33 OTA," 会被固件 open error:-1 拒绝）；.bin 后缀被固件标记为 OTA 文件。
-        String remoteName = task.getFileId().endsWith(".bin")
-                ? task.getFileId() : task.getFileId() + ".bin";
-        writeAscii("33bin,/data/" + remoteName + "," + task.getTotalSize());
+        writeAscii(buildOpenCommand(task.getFileId(), task.getFileName(), task.getTotalSize()));
         long deadline = nowMs() + HANDSHAKE_TIMEOUT_MS;
         while (true) {
             resp = awaitAscii(Math.max(1, deadline - nowMs()));

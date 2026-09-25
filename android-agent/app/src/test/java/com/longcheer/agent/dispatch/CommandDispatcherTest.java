@@ -27,6 +27,7 @@ import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -440,7 +441,7 @@ public class CommandDispatcherTest {
         DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.REGISTERED);
         when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);
         when(fileTransferManager.startTransfer(eq("task-1"), eq("fw.bin"), eq("AA:BB:CC:DD:EE:FF"),
-                eq(1024L), any(), eq(509), eq(64))).thenReturn(0);
+                eq(1024L), any(), eq(509), eq(64), isNull())).thenReturn(0);
 
         Map<String, Object> cmd = new HashMap<>();
         cmd.put("type", "FILE_TRANSFER");
@@ -454,14 +455,14 @@ public class CommandDispatcherTest {
         dispatcher.dispatch(cmd);
 
         verify(fileTransferManager).startTransfer(eq("task-1"), eq("fw.bin"),
-                eq("AA:BB:CC:DD:EE:FF"), eq(1024L), any(), eq(509), eq(64));
+                eq("AA:BB:CC:DD:EE:FF"), eq(1024L), any(), eq(509), eq(64), isNull());
         verify(stateReporter).reportCommandAck("req-14", 0, null);
     }
 
     @Test
     public void testFileTransferQuotaRejected() {
         when(fileTransferManager.startTransfer(any(), any(), any(), org.mockito.ArgumentMatchers.anyLong(),
-                any(), anyInt(), anyInt())).thenReturn(3004);
+                any(), anyInt(), anyInt(), any())).thenReturn(3004);
 
         Map<String, Object> cmd = new HashMap<>();
         cmd.put("type", "FILE_TRANSFER");

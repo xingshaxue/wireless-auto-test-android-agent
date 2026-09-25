@@ -132,9 +132,8 @@ public class SppTransferAdapter implements TransferAdapter {
             throw new TransferException("spp negotiate rejected: " + resp);
         }
 
-        String remoteName = task.getFileId().endsWith(".bin")
-                ? task.getFileId() : task.getFileId() + ".bin";
-        writeSppAscii("33bin,/data/" + remoteName + "," + task.getTotalSize());
+        writeSppAscii(com.longcheer.agent.transfer.LcProtoTransferAdapter.buildOpenCommand(
+                task.getFileId(), task.getFileName(), task.getTotalSize()));
         long deadline = nowMs() + HANDSHAKE_TIMEOUT_MS;
         while (true) {
             resp = awaitSpp(Math.max(1, deadline - nowMs()));

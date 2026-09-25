@@ -125,6 +125,7 @@ class FileTransfer(Envelope):
     sha256: str  # base64
     windowSize: int = 64
     chunkSize: int | None = None  # 缺省 = MTU - 3
+    fileName: str | None = None  # 原始文件名；.zip 结尾时 agent 落 /data/ota.zip
 
 
 class FileCancel(Envelope):

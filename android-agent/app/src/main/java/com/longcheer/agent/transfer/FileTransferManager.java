@@ -135,6 +135,16 @@ public class FileTransferManager {
     public synchronized int startTransfer(String taskId, String fileId, String mac,
                                           long totalSize, byte[] sha256,
                                           int chunkSize, int windowSize) {
+        return startTransfer(taskId, fileId, mac, totalSize, sha256, chunkSize, windowSize, null);
+    }
+
+    /**
+     * @param fileName 原始文件名（可选，决定 DUT 侧落盘名：.zip → /data/ota.zip）
+     * @return 0 受理；3004 磁盘配额/空间不足（§12.9）；2003 设备不存在
+     */
+    public synchronized int startTransfer(String taskId, String fileId, String mac,
+                                          long totalSize, byte[] sha256,
+                                          int chunkSize, int windowSize, String fileName) {
         TransferContext existing = tasks.get(taskId);
         if (existing != null && !isTerminal(existing.task.getState())) {
             return 0; // 幂等：重复下发视为已受理
@@ -160,7 +170,7 @@ public class FileTransferManager {
         }
 
         FileTransferTask task = new FileTransferTask(taskId, mac, fileId, totalSize,
-                chunkSize, windowSize);
+                chunkSize, windowSize, fileName);
         TransferContext ctx = new TransferContext(task, new File(transferDir, taskId + ".bin"),
                 sha256);
         tasks.put(taskId, ctx);

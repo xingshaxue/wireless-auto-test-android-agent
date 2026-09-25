@@ -323,7 +323,8 @@ public class CommandDispatcherImpl implements CommandDispatcher {
 
         int errorCode = fileTransferManager == null ? 2001
                 : fileTransferManager.startTransfer(taskId, fileId, mac,
-                        ((Number) sizeRaw).longValue(), sha256, chunkSize, windowSize);
+                        ((Number) sizeRaw).longValue(), sha256, chunkSize, windowSize,
+                        stringValue(command.get("fileName")));
         stateReporter.reportCommandAck(requestId, errorCode, null);
     }
 

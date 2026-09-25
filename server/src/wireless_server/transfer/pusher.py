@@ -80,7 +80,8 @@ class FilePusher:
         await self._ledger.send_command(
             session, "FILE_TRANSFER",
             taskId=task_id, fileId=file_id, deviceMac=device_mac,
-            size=rec["size"], sha256=rec["sha256"], windowSize=window_size)
+            size=rec["size"], sha256=rec["sha256"], windowSize=window_size,
+            fileName=rec.get("name"))
         logger.info("任务 %s 下发 FILE_TRANSFER agent=%s file=%s size=%d",
                     task_id, agent_id, file_id, rec["size"])
         return task_id

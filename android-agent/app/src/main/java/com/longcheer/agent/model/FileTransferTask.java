@@ -12,6 +12,7 @@ public class FileTransferTask {
     private final String taskId;
     private final String deviceMac;
     private final String fileId;
+    private final String fileName;
     private final long totalSize;
     private long transferredOffset;
     // 传输协议适配器可在握手时改写（LC 通道 B.3：4480B 块、窗口恒 1）。
@@ -23,12 +24,18 @@ public class FileTransferTask {
 
     public FileTransferTask(String taskId, String deviceMac, String fileId,
                             long totalSize, int chunkSize, int windowSize) {
+        this(taskId, deviceMac, fileId, totalSize, chunkSize, windowSize, null);
+    }
+
+    public FileTransferTask(String taskId, String deviceMac, String fileId,
+                            long totalSize, int chunkSize, int windowSize, String fileName) {
         this.taskId = taskId;
         this.deviceMac = deviceMac;
         this.fileId = fileId;
         this.totalSize = totalSize;
         this.chunkSize = chunkSize;
         this.windowSize = windowSize;
+        this.fileName = fileName;
         this.state = FileTransferState.PENDING;
         this.startTime = android.os.SystemClock.elapsedRealtime();
         this.retryCount = 0;
@@ -37,6 +44,8 @@ public class FileTransferTask {
     public String getTaskId() { return taskId; }
     public String getDeviceMac() { return deviceMac; }
     public String getFileId() { return fileId; }
+    /** 原始文件名（server FILE_TRANSFER 可选携带，决定 DUT 侧落盘名）。 */
+    public String getFileName() { return fileName; }
     public long getTotalSize() { return totalSize; }
     public long getTransferredOffset() { return transferredOffset; }
     public void setTransferredOffset(long transferredOffset) { this.transferredOffset = transferredOffset; }
