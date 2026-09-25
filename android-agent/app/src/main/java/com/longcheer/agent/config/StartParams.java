@@ -17,7 +17,7 @@ public final class StartParams {
     public static final String KEY_AUTO_START = "auto_start";
 
     public static final String DEFAULT_HOST = "127.0.0.1";
-    public static final int DEFAULT_PORT = 10086;
+    public static final int DEFAULT_PORT = 10409;
 
     public final String serverHost;
     public final int serverPort;

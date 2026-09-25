@@ -67,7 +67,7 @@ python3 -m venv .venv
 | 字段 | 默认值 | 说明 |
 |---|---|---|
 | `gateway.host` | `0.0.0.0` | TCP 网关监听地址 |
-| `gateway.port` | `10086` | TCP 网关端口（agent 连接） |
+| `gateway.port` | `10409` | TCP 网关端口（agent 连接） |
 | `gateway.tls_cert` / `gateway.tls_key` | `""` | 可选 TLS；配置后启用，握手失败不降级 |
 | `gateway.write_queue_max` | `1000` | 每 session 写队列上限，超限断开（背压） |
 | `gateway.ack_timeout_ms` | `30000` | CMD_ACK 等待超时 |
@@ -374,7 +374,7 @@ GET `/api/tests/runs/{run_id}` 返回的报告（同步落库 test_runs / test_r
 
 agent 侧配置（详见 `android-agent/README.md`），二选一：
 
-- **控制台**：安装 APK 打开「无线测试Agent」，填服务器地址 / 端口（默认 10086）/
+- **控制台**：安装 APK 打开「无线测试Agent」，填服务器地址 / 端口（默认 10409）/
   设备 ID → 保存配置 → 启动服务。（服务端已免鉴权，token 栏填任意值或留空，
   旧版本 agent 仍会发送，服务端忽略。）
 - **ADB 拉起**（联调 / CI）：
@@ -383,7 +383,7 @@ agent 侧配置（详见 `android-agent/README.md`），二选一：
 adb shell am startservice \
   -a com.longcheer.agent.ACTION_START \
   -n com.longcheer.agent/.AgentService \
-  --es server_host <服务器IP> --ei server_port 10086 \
+  --es server_host <服务器IP> --ei server_port 10409 \
   --es device_id phone-01
 # 模拟器/无蓝牙环境（虚拟 DUT 模式）：追加 --ez simulateDut true
 ```

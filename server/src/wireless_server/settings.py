@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 class GatewaySettings(BaseModel):
     host: str = "0.0.0.0"
-    port: int = 10086
+    port: int = 10409
     tls_cert: str = ""  # 可选；配置后启用 TLS，握手失败不降级
     tls_key: str = ""
     write_queue_max: int = 1000  # 每 session 写队列上限，超限断开（背压）

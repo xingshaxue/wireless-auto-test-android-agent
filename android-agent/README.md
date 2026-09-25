@@ -26,7 +26,7 @@ gradle :app:testDebugUnitTest      # 全部单元测试
 adb shell am startservice \
   -a com.longcheer.agent.ACTION_START \
   -n com.longcheer.agent/.AgentService \
-  --es server_host <IP> --ei server_port 10086 \
+  --es server_host <IP> --ei server_port 10409 \
   --es device_id phone-01
 # 模拟器/无蓝牙环境（虚拟 DUT 模式）：追加 --ez simulateDut true
 ```
@@ -36,7 +36,7 @@ adb shell am startservice \
 ### Mock 服务器与模拟器冒烟
 
 ```bash
-python3 ../tools/mock_server.py --port 10086 --dut-mac AA:BB:CC:DD:EE:FF   # 交互式
+python3 ../tools/mock_server.py --port 10409 --dut-mac AA:BB:CC:DD:EE:FF   # 交互式
 python3 ../tools/mock_server.py --selftest                                 # 协议自测
 ../tools/emulator_smoke.sh                                                 # 模拟器一键冒烟（需 KVM 权限）
 ```

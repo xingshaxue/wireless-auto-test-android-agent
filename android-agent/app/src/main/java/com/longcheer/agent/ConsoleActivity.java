@@ -192,7 +192,7 @@ public class ConsoleActivity extends Activity {
     private void saveViewsIntoPrefs() {
         prefs.edit()
                 .putString(StartParams.KEY_SERVER_HOST, editHost.getText().toString().trim())
-                // 端口固定默认 10086（StartParams.resolve 空值走 DEFAULT_PORT）；
+                // 端口固定默认 10409（StartParams.resolve 空值走 DEFAULT_PORT）；
                 // 清掉旧版本可能存过的端口，避免 UI 不可见时残留生效。
                 .remove(StartParams.KEY_SERVER_PORT)
                 .putString(StartParams.KEY_DEVICE_ID, editDeviceId.getText().toString().trim())

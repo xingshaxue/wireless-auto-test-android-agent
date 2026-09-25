@@ -12,7 +12,7 @@ ADB="$SDK/platform-tools/adb"
 EMU="$SDK/emulator/emulator"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APK="$REPO_ROOT/android-agent/app/build/outputs/apk/debug/app-debug.apk"
-MOCK_PORT=10086
+MOCK_PORT=10409
 DUT_MAC="AA:BB:CC:DD:EE:FF"
 SMOKE_LOG="$(mktemp /tmp/mock_smoke.XXXXXX.log)"
 

@@ -104,7 +104,7 @@ def sample_config(dut_mac: str) -> dict:
 
 
 class MockServer:
-    def __init__(self, host="0.0.0.0", port=10086, dut_mac="AA:BB:CC:DD:EE:FF"):
+    def __init__(self, host="0.0.0.0", port=10409, dut_mac="AA:BB:CC:DD:EE:FF"):
         self.host = host
         self.port = port
         self.dut_mac = dut_mac
@@ -454,7 +454,7 @@ def smoke(server: MockServer):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="mock server for wireless-auto-test agent")
-    parser.add_argument("--port", type=int, default=10086)
+    parser.add_argument("--port", type=int, default=10409)
     parser.add_argument("--dut-mac", default="AA:BB:CC:DD:EE:FF")
     parser.add_argument("--selftest", action="store_true")
     parser.add_argument("--smoke", action="store_true",

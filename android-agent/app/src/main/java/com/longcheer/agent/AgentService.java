@@ -83,7 +83,7 @@ public class AgentService extends Service {
 
     /** 服务器地址 Intent extra（可选，默认 127.0.0.1）。 */
     public static final String EXTRA_SERVER_HOST = "server_host";
-    /** 服务器端口 Intent extra（可选，默认 10086）。 */
+    /** 服务器端口 Intent extra（可选，默认 10409）。 */
     public static final String EXTRA_SERVER_PORT = "server_port";
     /** 手机业务 deviceId Intent extra（可选，默认使用 ANDROID_ID）。 */
     public static final String EXTRA_DEVICE_ID = "device_id";
@@ -115,7 +115,7 @@ public class AgentService extends Service {
 
     // 启动参数
     private String serverHost = "127.0.0.1";
-    private int serverPort = 10086;
+    private int serverPort = 10409;
     private String deviceId = "";
     private boolean simulateDut = false;
     /** 启动参数是否已解析（onStartCommand 或 bind 路径兜底解析后置 true）。 */

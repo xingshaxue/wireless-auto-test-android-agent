@@ -11,7 +11,7 @@
 ```
                  ┌──────────────────────────────────────┐
   使用方          │              Server                  │
-  浏览器 ⇄ REST/WS │  gateway(10086)  api(8080) 引擎/传输/  │
+  浏览器 ⇄ REST/WS │  gateway(10409)  api(8080) 引擎/传输/  │
   （Web 控制台）   │  配置中心/命令台账/事件库/测试报告      │
                  └───────────────┬──────────────────────┘
                                  │ TCP 长连接（JSON + 0xAC42 二进制帧）
@@ -46,7 +46,7 @@ cp deploy/server.toml.example server.toml   # 按需改端口/路径
 .venv/bin/python -m wireless_server --config server.toml
 ```
 
-TCP 网关监听 10086（agent 接入），API/控制台监听 8080。
+TCP 网关监听 10409（agent 接入），API/控制台监听 8080。
 
 ### 2. Web 控制台
 
@@ -68,7 +68,7 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 ```bash
 adb shell am startservice -a com.longcheer.agent.ACTION_START \
   -n com.longcheer.agent/.AgentService \
-  --es server_host <IP> --ei server_port 10086 --es device_id phone-01
+  --es server_host <IP> --ei server_port 10409 --es device_id phone-01
 ```
 
 ## 测试
