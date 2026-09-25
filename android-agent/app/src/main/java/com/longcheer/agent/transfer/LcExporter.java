@@ -210,13 +210,21 @@ public class LcExporter {
         if (name.isEmpty()) {
             throw new ExportException("bad remote path: " + remotePath);
         }
-        long totalSize = openExport(remotePath);
+        // 二进制窗口从 061 起持续到数据收齐：固件会在总大小帧后**立即自动推第 1 块**
+        // （真机抓包实证），若中途退出二进制相，自动推的块会被误归类为 ASCII 丢弃。
+        enterBinaryPhase();
+        long totalSize;
+        try {
+            totalSize = openExport(remotePath);
+        } catch (ExportException e) {
+            exitBinaryPhase();
+            throw e;
+        }
         AgentLog.i(TAG, "export start: " + remotePath + " size=" + totalSize);
 
         File dest = new File(exportDir, name);
         MessageDigest sha = newSha256();
         long received = 0;
-        enterBinaryPhase();
         try (RandomAccessFile raf = new RandomAccessFile(dest, "rw")) {
             raf.setLength(0); // 无断点续传：残留文件一律清空重来
             while (received < totalSize) {
@@ -238,28 +246,24 @@ public class LcExporter {
         return new ExportedFile(name, remotePath, dest, totalSize, sha.digest());
     }
 
-    /** 061 开始导出：回 '@'+u32BE 总大小；无响应 5s 重发，上限 {@link #OPEN_RETRY_MAX} 次。 */
+    /** 061 开始导出：回 '@'+u32BE 总大小；无响应 5s 重发，上限 {@link #OPEN_RETRY_MAX} 次。
+     *  调用方须已 enterBinaryPhase（本方法不退出，留给数据拉取阶段）。 */
     private long openExport(String remotePath) throws ExportException {
-        enterBinaryPhase();
-        try {
-            for (int attempt = 1; attempt <= OPEN_RETRY_MAX; attempt++) {
-                writeAscii("061" + remotePath);
-                byte[] header = awaitBinary(5, openTimeoutMs);
-                if (header != null) {
-                    if (header[0] != '@') {
-                        throw new ExportException("061 应答帧头非法: "
-                                + Integer.toHexString(header[0] & 0xFF));
-                    }
-                    return u32be(header, 1);
+        for (int attempt = 1; attempt <= OPEN_RETRY_MAX; attempt++) {
+            writeAscii("061" + remotePath);
+            byte[] header = awaitBinary(5, openTimeoutMs);
+            if (header != null) {
+                if (header[0] != '@') {
+                    throw new ExportException("061 应答帧头非法: "
+                            + Integer.toHexString(header[0] & 0xFF));
                 }
-                AgentLog.w(TAG, "061 无响应，重发 (" + attempt + "/" + OPEN_RETRY_MAX + "): "
-                        + remotePath);
+                return u32be(header, 1);
             }
-            throw new ExportException("061 无响应（重发 " + OPEN_RETRY_MAX + " 次仍失败）: "
+            AgentLog.w(TAG, "061 无响应，重发 (" + attempt + "/" + OPEN_RETRY_MAX + "): "
                     + remotePath);
-        } finally {
-            exitBinaryPhase();
         }
+        throw new ExportException("061 无响应（重发 " + OPEN_RETRY_MAX + " 次仍失败）: "
+                + remotePath);
     }
 
     /**
