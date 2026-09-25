@@ -58,6 +58,8 @@ public class TcpClientImpl implements TcpClient {
     private ExecutorService writerExecutor;
 
     private final Object stateLock = new Object();
+    /** 重连线程引用（connect/disconnect 通过 interrupt 唤醒它立即重连）。 */
+    private volatile Thread connectThread;
 
     @Override
     public void connect(String host, int port) {
@@ -65,6 +67,12 @@ public class TcpClientImpl implements TcpClient {
         this.port = port;
         if (started.compareAndSet(false, true)) {
             startThreads();
+        } else {
+            // 已在运行：唤醒重连线程，立即按新目标连接（否则要等退避到期）。
+            Thread t = connectThread;
+            if (t != null) {
+                t.interrupt();
+            }
         }
     }
 
@@ -77,9 +85,11 @@ public class TcpClientImpl implements TcpClient {
     }
 
     private void connectLoop() {
+        connectThread = Thread.currentThread();
         int reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
         while (!stopped.get()) {
             Socket currentSocket = null;
+            boolean woken = false;
             try {
                 currentSocket = new Socket();
                 currentSocket.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT_MS);
@@ -107,6 +117,11 @@ public class TcpClientImpl implements TcpClient {
                         stateLock.wait(1000L);
                     }
                 }
+            } catch (InterruptedException e) {
+                if (stopped.get()) {
+                    break;
+                }
+                woken = true; // connect()/disconnect() 的唤醒信号：立即按新目标重连
             } catch (Exception e) {
                 if (stopped.get()) {
                     break;
@@ -123,11 +138,19 @@ public class TcpClientImpl implements TcpClient {
             if (stopped.get()) {
                 break;
             }
+            if (woken) {
+                reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
+                continue;
+            }
             try {
                 Thread.sleep(reconnectDelay);
             } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
+                if (stopped.get()) {
+                    break;
+                }
+                // 唤醒信号：立即重连，退避不翻倍
+                reconnectDelay = INITIAL_RECONNECT_DELAY_MS;
+                continue;
             }
             reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
         }
@@ -245,12 +268,18 @@ public class TcpClientImpl implements TcpClient {
 
     @Override
     public void disconnect() {
-        close();
+        // 仅断开当前连接并唤醒重连线程立即重连（线程保留）；彻底关闭用 close()。
+        closeSocket(socket);
+        Thread t = connectThread;
+        if (t != null) {
+            t.interrupt();
+        }
     }
 
     /**
      * 关闭连接并清理所有线程资源。
      */
+    @Override
     public void close() {
         if (stopped.compareAndSet(false, true)) {
             closeSocket(socket);

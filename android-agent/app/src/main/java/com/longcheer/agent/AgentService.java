@@ -871,7 +871,7 @@ public class AgentService extends Service {
             pollingScheduler.stop();
         }
         if (tcpClient != null) {
-            tcpClient.disconnect();
+            tcpClient.close();
         }
         if (bleCentralManager != null) {
             // TODO：后续由 BleCentralManager 提供 cleanup() 接口释放底层 BluetoothGatt。
@@ -988,6 +988,11 @@ public class AgentService extends Service {
         @Override
         public void disconnect() {
             Log.d(TAG, "StubTcpClient.disconnect");
+        }
+
+        @Override
+        public void close() {
+            Log.d(TAG, "StubTcpClient.close");
         }
 
         @Override
