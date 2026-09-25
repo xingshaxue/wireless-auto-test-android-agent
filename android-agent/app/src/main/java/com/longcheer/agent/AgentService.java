@@ -661,6 +661,7 @@ public class AgentService extends Service {
                 Log.w(TAG, "device chain config rejected: " + mac);
             }
             controller.setPollRules(com.longcheer.agent.poll.PollResultChainImpl.toPollRules(device));
+            controller.setTransferChannel(device.getTransferChannel());
 
             if (device.isPersistent()) {
                 connectionScheduler.setPersistent(mac, true);

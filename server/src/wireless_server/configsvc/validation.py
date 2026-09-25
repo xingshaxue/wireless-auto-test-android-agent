@@ -19,6 +19,9 @@ MAC_RE = re.compile(r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
 
 MIN_INTERVAL_MS = 200  # §16.4：readCharacteristics 非空时 intervalMs 下限
 
+# 文件/OTA 传输通道词表（SPP 加速通道；缺省 "ble"）
+TRANSFER_CHANNELS = {"ble", "spp", "auto"}
+
 
 def _is_number(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
@@ -37,6 +40,13 @@ def validate_device(device: dict) -> list[str]:
         errors.append("缺少必填字段 mac")
     elif not isinstance(mac, str) or not MAC_RE.match(mac):
         errors.append(f"mac 格式非法（须大写冒号，附录 A.1）: {mac!r}")
+
+    # transferChannel：可选，须 ∈ {ble, spp, auto}（缺省 ble，SPP 加速通道）
+    channel = device.get("transferChannel")
+    if channel is not None and channel not in TRANSFER_CHANNELS:
+        errors.append(
+            f"transferChannel 非法（须 ∈ {sorted(TRANSFER_CHANNELS)}）: {channel!r}"
+        )
 
     # fields：字段名 → {char, format, byteOrder?, scale?, byteOffset?}
     fields = device.get("fields", {})

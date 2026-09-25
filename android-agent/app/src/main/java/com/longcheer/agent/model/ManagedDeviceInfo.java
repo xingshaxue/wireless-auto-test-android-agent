@@ -36,6 +36,8 @@ public class ManagedDeviceInfo {
     private int reconnectCount;
     private String stateFlag;
     private long notifyBoostUntil;
+    /** 文件/OTA 传输通道（"ble"/"spp"/"auto"），由 applyConfig 随 DeviceConfig 下发。 */
+    private String transferChannel = "ble";
 
     public ManagedDeviceInfo(String deviceId, String mac) {
         this.deviceId = deviceId;
@@ -186,6 +188,15 @@ public class ManagedDeviceInfo {
         this.notifyBoostUntil = notifyBoostUntil;
     }
 
+    public String getTransferChannel() {
+        return transferChannel;
+    }
+
+    public void setTransferChannel(String transferChannel) {
+        this.transferChannel = transferChannel == null || transferChannel.isEmpty()
+                ? "ble" : transferChannel;
+    }
+
     /**
      * 返回当前状态的深拷贝快照。
      */
@@ -207,6 +218,7 @@ public class ManagedDeviceInfo {
         copy.reconnectCount = reconnectCount;
         copy.stateFlag = stateFlag;
         copy.notifyBoostUntil = notifyBoostUntil;
+        copy.transferChannel = transferChannel;
         return copy;
     }
 

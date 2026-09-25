@@ -493,6 +493,13 @@ public class DeviceControllerImpl implements DeviceController {
     }
 
     @Override
+    public void setTransferChannel(String channel) {
+        synchronized (lock) {
+            info.setTransferChannel(channel);
+        }
+    }
+
+    @Override
     public void setPollRules(List<PollRule> rules) {
         synchronized (lock) {
             this.pollRules = rules == null ? Collections.emptyList() : Collections.unmodifiableList(rules);

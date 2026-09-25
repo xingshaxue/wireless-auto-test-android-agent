@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS devices (
     type         TEXT NOT NULL DEFAULT '',
     priority     INTEGER NOT NULL DEFAULT 0,
     persistent   INTEGER NOT NULL DEFAULT 0,
+    transfer_channel TEXT NOT NULL DEFAULT 'ble',
     profile_json TEXT NOT NULL DEFAULT '{}',
     fields_json  TEXT NOT NULL DEFAULT '{}',
     polling_json TEXT NOT NULL DEFAULT '{}',
@@ -96,6 +97,12 @@ class Store:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(config_versions)")}
         if "content_hash" not in cols:
             conn.execute("ALTER TABLE config_versions ADD COLUMN content_hash TEXT")
+        # 存量库迁移：devices 增加传输通道列（SPP 加速通道，缺省 ble）。
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(devices)")}
+        if "transfer_channel" not in cols:
+            conn.execute(
+                "ALTER TABLE devices ADD COLUMN transfer_channel TEXT NOT NULL DEFAULT 'ble'"
+            )
         conn.commit()
         self._conn = conn
 
@@ -120,11 +127,13 @@ class Store:
         conn.execute(
             """
             INSERT INTO devices (mac, device_id, type, priority, persistent,
+                                 transfer_channel,
                                  profile_json, fields_json, polling_json, rules_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(mac) DO UPDATE SET
                 device_id=excluded.device_id, type=excluded.type,
                 priority=excluded.priority, persistent=excluded.persistent,
+                transfer_channel=excluded.transfer_channel,
                 profile_json=excluded.profile_json, fields_json=excluded.fields_json,
                 polling_json=excluded.polling_json, rules_json=excluded.rules_json
             """,
@@ -134,6 +143,7 @@ class Store:
                 device.get("type", ""),
                 int(device.get("priority", 0)),
                 1 if device.get("persistent") else 0,
+                device.get("transferChannel", "ble"),
                 json.dumps(device.get("profile", {}), ensure_ascii=False),
                 json.dumps(device.get("fields", {}), ensure_ascii=False),
                 json.dumps(device.get("polling", {}), ensure_ascii=False),
@@ -144,13 +154,15 @@ class Store:
 
     @staticmethod
     def _row_to_device(row: sqlite3.Row | tuple) -> dict[str, Any]:
-        mac, device_id, dtype, priority, persistent, profile, fields, polling, rules = row
+        (mac, device_id, dtype, priority, persistent, transfer_channel,
+         profile, fields, polling, rules) = row
         return {
             "deviceId": device_id,
             "mac": mac,
             "type": dtype,
             "priority": priority,
             "persistent": bool(persistent),
+            "transferChannel": transfer_channel,
             "profile": json.loads(profile),
             "fields": json.loads(fields),
             "polling": json.loads(polling),
@@ -162,7 +174,7 @@ class Store:
 
     def _get_device(self, mac: str) -> dict[str, Any] | None:
         row = self._require_conn().execute(
-            "SELECT mac, device_id, type, priority, persistent,"
+            "SELECT mac, device_id, type, priority, persistent, transfer_channel,"
             " profile_json, fields_json, polling_json, rules_json"
             " FROM devices WHERE mac = ?",
             (mac,),
@@ -174,7 +186,7 @@ class Store:
 
     def _list_devices(self) -> list[dict[str, Any]]:
         rows = self._require_conn().execute(
-            "SELECT mac, device_id, type, priority, persistent,"
+            "SELECT mac, device_id, type, priority, persistent, transfer_channel,"
             " profile_json, fields_json, polling_json, rules_json"
             " FROM devices ORDER BY mac"
         ).fetchall()

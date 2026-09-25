@@ -17,6 +17,7 @@ def _device(mac: str = MAC, **overrides) -> dict:
         "type": "watch",
         "priority": 5,
         "persistent": False,
+        "transferChannel": "ble",
         "profile": {"2A19": "180F", "2A21": "180A"},
         "fields": {
             "battery": {"char": "2A19", "format": "uint8"},
@@ -67,8 +68,8 @@ async def test_device_crud_roundtrip(store):
     assert await store.get_device(MAC) == device
     assert await store.list_devices() == [device]
 
-    # upsert 同 mac 整项替换
-    updated = _device(priority=9, persistent=True)
+    # upsert 同 mac 整项替换（顺带覆盖 transferChannel 存储往返）
+    updated = _device(priority=9, persistent=True, transferChannel="spp")
     await store.upsert_device(updated)
     assert await store.get_device(MAC) == updated
     assert len(await store.list_devices()) == 1
@@ -230,6 +231,16 @@ def test_validate_device_between_value():
         rules[0]["conditions"][0]["value"] = bad
         errors = validation.validate_device(_device(rules=rules))
         assert any("BETWEEN" in e for e in errors), bad
+
+
+def test_validate_device_transfer_channel_vocab():
+    # transferChannel 可选：缺省/合法值通过，非法值拒绝（SPP 加速通道词表）
+    assert validation.validate_device(_device()) == []
+    for ok in ["ble", "spp", "auto"]:
+        assert validation.validate_device(_device(transferChannel=ok)) == []
+    for bad in ["BLE", "rfcomm", "", 1]:
+        errors = validation.validate_device(_device(transferChannel=bad))
+        assert any("transferChannel" in e for e in errors), bad
 
 
 # ---------------- validation：全局参数 ----------------

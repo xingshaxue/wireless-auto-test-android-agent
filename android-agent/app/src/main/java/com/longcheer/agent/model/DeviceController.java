@@ -36,6 +36,10 @@ public interface DeviceController {
 
     void setPollingConfig(PollingConfig config);
 
+    /** 设置文件/OTA 传输通道（"ble"/"spp"/"auto"，applyConfig 随 DeviceConfig 下发）。 */
+    default void setTransferChannel(String channel) {
+    }
+
     void setPollRules(List<PollRule> rules);
 
     boolean isReady();

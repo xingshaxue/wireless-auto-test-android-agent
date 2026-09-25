@@ -161,12 +161,35 @@ public final class AgentAssembler {
                     pollingScheduler, c.stateReporter, config, transferDir,
                     (task, device) -> new com.longcheer.agent.transfer.SimulatedTransferAdapter());
         } else {
-            // DUT 传输协议适配器：LC 工厂通道（lc_proto，docs/02 通道 B；§7.6）。
-            // UnsupportedTransferAdapter 保留作兜底参考，不再装配。
+            // DUT 传输协议适配器：按设备 transferChannel 选通道（§7.6 / docs/02 通道 B）：
+            // "ble" = LC 工厂通道（现状）；"spp" = SPP 加速通道（RFCOMM 承载 33x）；
+            // "auto" = 先 SPP，握手失败回退 LC。UnsupportedTransferAdapter 保留作兜底参考。
             c.fileTransferManager = new FileTransferManager(c.deviceRegistry, c.connectionScheduler,
                     pollingScheduler, c.stateReporter, config, transferDir,
-                    (task, device) -> new com.longcheer.agent.transfer.LcProtoTransferAdapter(
-                            c.bleCentralManager, responseBus));
+                    (task, device) -> {
+                        String channel = device.snapshot().getTransferChannel();
+                        if (com.longcheer.agent.config.DeviceConfig.TRANSFER_CHANNEL_SPP
+                                .equals(channel)) {
+                            return new com.longcheer.agent.spp.SppTransferAdapter(
+                                    c.bleCentralManager, responseBus,
+                                    new com.longcheer.agent.spp.SppClient(
+                                            new com.longcheer.agent.spp.SppClient
+                                                    .BluetoothConnector(adapter)));
+                        }
+                        if (com.longcheer.agent.config.DeviceConfig.TRANSFER_CHANNEL_AUTO
+                                .equals(channel)) {
+                            return new com.longcheer.agent.transfer.FallbackTransferAdapter(
+                                    new com.longcheer.agent.spp.SppTransferAdapter(
+                                            c.bleCentralManager, responseBus,
+                                            new com.longcheer.agent.spp.SppClient(
+                                                    new com.longcheer.agent.spp.SppClient
+                                                            .BluetoothConnector(adapter))),
+                                    () -> new com.longcheer.agent.transfer.LcProtoTransferAdapter(
+                                            c.bleCentralManager, responseBus));
+                        }
+                        return new com.longcheer.agent.transfer.LcProtoTransferAdapter(
+                                c.bleCentralManager, responseBus);
+                    });
         }
 
         c.commandDispatcher = new CommandDispatcherImpl(c.bleCentralManager, c.deviceRegistry,

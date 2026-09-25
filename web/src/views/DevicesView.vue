@@ -11,6 +11,7 @@ const DEVICE_TEMPLATE = `{
   "type": "watch",
   "priority": 5,
   "persistent": false,
+  "transferChannel": "ble",
   "profile": { "2A19": "180F", "2A21": "180A" },
   "fields": {
     "battery": { "char": "2A19", "format": "uint8" },
@@ -217,6 +218,34 @@ async function togglePersistent(d: DeviceConfig, on: boolean) {
   }
 }
 
+// ---------------- 传输通道（ble/spp/auto，SPP 加速通道） ----------------
+const channelVisible = ref(false)
+const channelMac = ref('')
+const channelValue = ref<'ble' | 'spp' | 'auto'>('ble')
+let channelDevice: DeviceConfig | null = null
+
+const CHANNEL_LABELS: Record<string, string> = { ble: 'BLE', spp: 'SPP', auto: '自动' }
+
+function openChannel(d: DeviceConfig) {
+  channelDevice = d
+  channelMac.value = d.mac
+  channelValue.value = d.transferChannel ?? 'ble'
+  channelVisible.value = true
+}
+
+async function saveChannel() {
+  if (!channelDevice) return
+  try {
+    // 无专用端点：整设备配置 PUT（store 直通，字段随全量配置下发 agent）
+    await client.put('/devices', { ...channelDevice, transferChannel: channelValue.value })
+    ElMessage.success('传输通道已保存')
+    channelVisible.value = false
+    fetchDevices()
+  } catch (e) {
+    ElMessage.error(`保存失败：${errorDetail(e)}`)
+  }
+}
+
 // ---------------- 全局区 ----------------
 const maxSlots = ref(3)
 const maxSlotsSaving = ref(false)
@@ -305,15 +334,19 @@ async function saveGlobals() {
         <el-table-column label="轮询间隔" width="100">
           <template #default="{ row }">{{ row.polling?.intervalMs ?? '-' }} ms</template>
         </el-table-column>
+        <el-table-column label="传输通道" width="90">
+          <template #default="{ row }">{{ CHANNEL_LABELS[row.transferChannel ?? 'ble'] }}</template>
+        </el-table-column>
         <el-table-column label="读取特征" min-width="140">
           <template #default="{ row }">
             {{ (row.polling?.readCharacteristics ?? []).join(', ') || '-' }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="300" fixed="right">
+        <el-table-column label="操作" width="360" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="openInterval(row)">轮询间隔</el-button>
             <el-button size="small" @click="openRules(row)">规则</el-button>
+            <el-button size="small" @click="openChannel(row)">传输通道</el-button>
             <el-button size="small" @click="openEdit(row)">编辑</el-button>
             <el-button size="small" @click="copyFrom(row)">复制</el-button>
             <el-button size="small" type="danger" @click="removeDevice(row)">删除</el-button>
@@ -363,6 +396,21 @@ async function saveGlobals() {
       <el-input v-model="rulesJson" type="textarea" :rows="14" placeholder='[{"ruleId":"r1", ...}]' />
       <template #footer>
         <el-button type="primary" @click="saveRules">下发（整集替换）</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="channelVisible" :title="`传输通道 — ${channelMac}`" width="420px">
+      <el-form label-width="120px">
+        <el-form-item label="传输通道">
+          <el-select v-model="channelValue">
+            <el-option label="BLE（LC 通道，默认）" value="ble" />
+            <el-option label="SPP（RFCOMM 加速）" value="spp" />
+            <el-option label="自动（先 SPP，失败回退 BLE）" value="auto" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button type="primary" @click="saveChannel">保存</el-button>
       </template>
     </el-dialog>
   </div>

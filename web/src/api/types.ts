@@ -109,6 +109,7 @@ export interface DeviceConfig {
     reportOnlyChanged?: boolean
   }
   rules?: Record<string, unknown>[]
+  transferChannel?: 'ble' | 'spp' | 'auto'
   [key: string]: unknown
 }
 

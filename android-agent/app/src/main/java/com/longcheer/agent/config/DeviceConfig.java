@@ -14,11 +14,17 @@ import org.json.JSONObject;
  */
 public final class DeviceConfig {
 
+    /** 文件/OTA 传输通道取值（BLE LC 通道 / SPP RFCOMM 加速通道 / 自动回退）。 */
+    public static final String TRANSFER_CHANNEL_BLE = "ble";
+    public static final String TRANSFER_CHANNEL_SPP = "spp";
+    public static final String TRANSFER_CHANNEL_AUTO = "auto";
+
     private final String deviceId;
     private final String mac;
     private final String type;
     private final int priority;
     private final boolean persistent;
+    private final String transferChannel;
     private final Map<String, String> profile;
     private final Map<String, FieldMappingConfig> fields;
     private final PollingConfig polling;
@@ -29,6 +35,7 @@ public final class DeviceConfig {
                         String type,
                         int priority,
                         boolean persistent,
+                        String transferChannel,
                         Map<String, String> profile,
                         Map<String, FieldMappingConfig> fields,
                         PollingConfig polling,
@@ -38,6 +45,8 @@ public final class DeviceConfig {
         this.type = type;
         this.priority = priority;
         this.persistent = persistent;
+        this.transferChannel = transferChannel == null || transferChannel.isEmpty()
+                ? TRANSFER_CHANNEL_BLE : transferChannel;
         this.profile = copyStringMap(profile);
         this.fields = copyFieldMap(fields);
         this.polling = polling == null ? PollingConfig.defaults() : polling;
@@ -90,6 +99,7 @@ public final class DeviceConfig {
                 json.optString("type", null),
                 json.optInt("priority", 0),
                 json.optBoolean("persistent", false),
+                json.optString("transferChannel", TRANSFER_CHANNEL_BLE),
                 profile,
                 fields,
                 PollingConfig.fromJson(json.optJSONObject("polling")),
@@ -115,6 +125,11 @@ public final class DeviceConfig {
 
     public boolean isPersistent() {
         return persistent;
+    }
+
+    /** 文件/OTA 传输通道（"ble"/"spp"/"auto"，默认 "ble"）。 */
+    public String getTransferChannel() {
+        return transferChannel;
     }
 
     public Map<String, String> getProfile() {
