@@ -193,12 +193,17 @@ public final class AgentAssembler {
                     });
         }
 
-        // 设备文件导出（DUT→手机→server，docs/02 B.6）：LC 通道 061/062/063 协议，
+        // 设备文件导出（DUT→手机→server，docs/02 B.6）：061/062/063 协议，承载按设备
+        // transferChannel 选路（ble=LC 通道 / spp=RFCOMM / auto=先 SPP 失败回退 BLE），
         // 落盘 filesDir/export/<exportId>/ 后经 TCP EXPORT_FRAME/EXPORT_END 帧回传入库。
         c.fileExportManager = new com.longcheer.agent.transfer.FileExportManager(
                 c.deviceRegistry, c.connectionScheduler, pollingScheduler, c.stateReporter,
                 config, new File(context.getFilesDir(), "export"), c.tcpClient,
-                () -> new com.longcheer.agent.transfer.LcExporter(c.bleCentralManager, responseBus));
+                () -> new com.longcheer.agent.transfer.LcExporter(c.bleCentralManager, responseBus),
+                mac -> new com.longcheer.agent.spp.SppExportOpener(
+                        c.bleCentralManager, responseBus,
+                        new com.longcheer.agent.spp.SppClient.BluetoothConnector(adapter))
+                        .open(mac));
 
         c.commandDispatcher = new CommandDispatcherImpl(c.bleCentralManager, c.deviceRegistry,
                 c.connectionScheduler, c.pollingScheduler, c.stateReporter, config, chain,

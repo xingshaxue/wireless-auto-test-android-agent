@@ -262,20 +262,28 @@ public class SppTransferAdapter implements TransferAdapter {
 
     // ==================== 内部 ====================
 
-    /** 经 BLE LC 通道发 AT 开经典蓝牙；回包含 OK 即过（"ENABLE_BT=OK"/"OK=BT_SCAN, 3"）。 */
+    /** 经 BLE LC 通道发 AT 开经典蓝牙；回包含 OK 即过（"ENABLE_BT=OK"/"OK=BT_SCAN, 3"）。
+     *  过滤非 AT 回包：LC 通道与导出/LS 共用，应答窗口内可能混进 LS 条目/导出残留。 */
     private void enableClassicBt(String atCommand) throws TransferException {
         bleMailbox.clear(); // 丢弃上一步残留回包
         bleClient.writeCharacteristic(LcProtoTransferAdapter.LC_SERVICE_UUID,
                 LcProtoTransferAdapter.LC_CHAR_UUID,
                 atCommand.getBytes(StandardCharsets.US_ASCII), true);
-        String resp = awaitBle(atTimeoutMs);
-        if (resp == null) {
-            throw new TransferException("AT timeout: " + atCommand);
+        long deadline = nowMs() + atTimeoutMs;
+        while (true) {
+            String resp = awaitBle(Math.max(1, deadline - nowMs()));
+            if (resp == null) {
+                throw new TransferException("AT timeout: " + atCommand);
+            }
+            if (resp.contains("OK")) {
+                AgentLog.i(TAG, atCommand + " -> " + resp);
+                return;
+            }
+            if (resp.contains("ERROR") || resp.contains("error")) {
+                throw new TransferException("AT rejected: " + atCommand + " -> " + resp);
+            }
+            AgentLog.d(TAG, "ignore non-AT reply while waiting " + atCommand + ": " + resp);
         }
-        if (!resp.contains("OK")) {
-            throw new TransferException("AT rejected: " + atCommand + " -> " + resp);
-        }
-        AgentLog.i(TAG, atCommand + " -> " + resp);
     }
 
     private void registerNotifyTap() {

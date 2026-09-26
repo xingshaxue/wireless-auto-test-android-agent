@@ -61,6 +61,7 @@ public class FileExportManagerTest {
     private CapturingTcpClient tcpClient;
     private File exportRoot;
     private DeviceController controller;
+    private ManagedDeviceInfo info;
 
     /** 测试用导出器：跳过 BLE，直接落盘给定内容。 */
     private static LcExporter fakeExporter(Map<String, byte[]> files) {
@@ -96,8 +97,13 @@ public class FileExportManagerTest {
     }
 
     private FileExportManager newManager(LcExporter exporter) {
+        return newManager(exporter, null);
+    }
+
+    private FileExportManager newManager(LcExporter exporter,
+                                         FileExportManager.SppOpener sppOpener) {
         return new FileExportManager(registry, connectionScheduler, pollingScheduler,
-                reporter, mockConfig(), exportRoot, tcpClient, () -> exporter) {
+                reporter, mockConfig(), exportRoot, tcpClient, () -> exporter, sppOpener) {
             @Override
             void launchExport(ExportContext ctx) {
                 runExport(ctx); // 同步驱动
@@ -116,7 +122,7 @@ public class FileExportManagerTest {
     public void setUp() {
         registry = new DeviceRegistryImpl();
         controller = mock(DeviceController.class);
-        ManagedDeviceInfo info = new ManagedDeviceInfo("dut-1", MAC);
+        info = new ManagedDeviceInfo("dut-1", MAC);
         info.setState(DeviceState.READY);
         when(controller.snapshot()).thenReturn(info);
         when(controller.isReady()).thenReturn(true);
@@ -135,6 +141,65 @@ public class FileExportManagerTest {
             data[i] = (byte) (i % 251);
         }
         return data;
+    }
+
+    @Test
+    public void sppDirectoryOpensFreshSessionPerFile() throws Exception {
+        // 真机实证固件在"一条 SPP 会话跑多文件"时导出流路由不稳定（061 死信），
+        // 生产路径 = 一次 LS + 每文件独立 SPP 会话。
+        info.setTransferChannel("spp");
+        Map<String, byte[]> files = new java.util.LinkedHashMap<>();
+        files.put("a.txt", new byte[]{1, 2, 3});
+        files.put("b.txt", new byte[]{4, 5, 6, 7});
+        LcExporter exporter = new LcExporter(mock(GattClientProvider.class),
+                new GattResponseBus()) {
+            @Override
+            public List<ExportedFile> export(DeviceController device, String remotePath,
+                                             File exportDir) throws ExportException {
+                // 单文件模式：只落盘 remotePath 指定的那个文件
+                String name = remotePath.substring(remotePath.lastIndexOf('/') + 1);
+                byte[] data = files.get(name);
+                if (data == null) {
+                    throw new ExportException("no such file: " + remotePath);
+                }
+                if (!exportDir.isDirectory() && !exportDir.mkdirs()) {
+                    throw new ExportException("fake mkdirs failed");
+                }
+                File f = new File(exportDir, name);
+                try (FileOutputStream fos = new FileOutputStream(f)) {
+                    fos.write(data);
+                } catch (java.io.IOException ex) {
+                    throw new ExportException("fake write failed");
+                }
+                List<ExportedFile> out = new ArrayList<>();
+                out.add(new ExportedFile(name, remotePath, f, data.length, sha256(data)));
+                return out;
+            }
+
+            @Override
+            public List<String> listRemoteDirOverSpp(DeviceController device, String dirPath,
+                    com.longcheer.agent.spp.SppByteStream channel) {
+                return new ArrayList<>(files.keySet());
+            }
+        };
+        java.util.concurrent.atomic.AtomicInteger opens =
+                new java.util.concurrent.atomic.AtomicInteger();
+        FileExportManager.SppOpener opener = mac -> {
+            opens.incrementAndGet();
+            return mock(com.longcheer.agent.spp.SppByteStream.class);
+        };
+        FileExportManager manager = newManager(exporter, opener);
+
+        assertEquals(0, manager.startExport("export-spp1", MAC, "/logs/"));
+
+        assertEquals("DONE", manager.getExportState("export-spp1"));
+        assertEquals("LS 一次 + 每文件一条会话", 1 + files.size(), opens.get());
+        // 两文件均经 EXPORT_END 上报（各带 sha）
+        long endCount = tcpClient.frames.stream()
+                .map(FileFrameCodec::decode)
+                .filter(f -> f.type == FileFrameCodec.FrameType.EXPORT_END)
+                .count();
+        assertEquals(files.size(), endCount);
     }
 
     @Test

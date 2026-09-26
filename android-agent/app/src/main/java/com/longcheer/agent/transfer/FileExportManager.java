@@ -74,6 +74,18 @@ public class FileExportManager {
 
     private final Map<String, ExportContext> exports = new ConcurrentHashMap<>();
 
+    /** SPP 导出通道开启器（生产 = SppExportOpener；null = 仅 BLE 通道）。 */
+    public interface SppOpener {
+        com.longcheer.agent.spp.SppByteStream open(String mac) throws Exception;
+    }
+
+    private static final String CHANNEL_SPP =
+            com.longcheer.agent.config.DeviceConfig.TRANSFER_CHANNEL_SPP;
+    private static final String CHANNEL_AUTO =
+            com.longcheer.agent.config.DeviceConfig.TRANSFER_CHANNEL_AUTO;
+
+    private final SppOpener sppOpener;
+
     public FileExportManager(DeviceRegistry deviceRegistry,
                              ConnectionScheduler connectionScheduler,
                              PollingScheduler pollingScheduler,
@@ -81,7 +93,8 @@ public class FileExportManager {
                              AgentConfig config,
                              File exportRootDir,
                              TcpClient tcpClient,
-                             ExporterFactory exporterFactory) {
+                             ExporterFactory exporterFactory,
+                             SppOpener sppOpener) {
         this.deviceRegistry = deviceRegistry;
         this.connectionScheduler = connectionScheduler;
         this.pollingScheduler = pollingScheduler;
@@ -90,6 +103,7 @@ public class FileExportManager {
         this.exportRootDir = exportRootDir;
         this.tcpClient = tcpClient;
         this.exporterFactory = exporterFactory;
+        this.sppOpener = sppOpener;
         this.worker = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "FileExport");
             t.setDaemon(true);
@@ -140,10 +154,28 @@ public class FileExportManager {
                 errorCode = 1001;
                 detail = "connect timeout";
             } else {
-                exporter = exporterFactory.create();
                 File dir = new File(exportRootDir, ctx.exportId);
-                List<LcExporter.ExportedFile> exported =
-                        exporter.export(controller, ctx.remotePath, dir);
+                List<LcExporter.ExportedFile> exported = null;
+                // 通道选择（DeviceConfig.transferChannel，与文件传输同一配置项）：
+                // "ble" = LC 通道；"spp" = RFCOMM 承载；"auto" = 先 SPP 失败回退 BLE。
+                String channel = controller.snapshot().getTransferChannel();
+                boolean wantSpp = sppOpener != null && (CHANNEL_SPP.equals(channel)
+                        || CHANNEL_AUTO.equals(channel));
+                if (wantSpp) {
+                    try {
+                        exported = exportViaSpp(controller, ctx.remotePath, dir);
+                        AgentLog.i(TAG, "SPP 通道导出成功: " + exported.size() + " 个文件");
+                    } catch (Exception e) {
+                        if (CHANNEL_SPP.equals(channel)) {
+                            throw e;
+                        }
+                        AgentLog.w(TAG, "SPP 导出失败，回退 BLE: " + e.getMessage());
+                    }
+                }
+                if (exported == null) {
+                    exporter = exporterFactory.create();
+                    exported = exporter.export(controller, ctx.remotePath, dir);
+                }
                 for (LcExporter.ExportedFile f : exported) {
                     uploadFile(f);
                     Map<String, Object> item = new HashMap<>();
@@ -167,6 +199,62 @@ public class FileExportManager {
         reportResult(ctx, files, errorCode, detail);
         // 本地暂存清理：成功已上传、失败无断点续传价值，一律删除
         deleteDirQuietly(new File(exportRootDir, ctx.exportId));
+    }
+
+    /**
+     * 经 SPP 通道导出。目录模式拆成"一次 LS + 每文件独立 SPP 会话"
+     * （真机实证：多文件共用一条 SPP 会话时固件导出流路由不稳定、061 死信；
+     * 而每文件新开一条 SPP 会话直接 061 稳定且 ~40KB/s）。
+     */
+    private List<LcExporter.ExportedFile> exportViaSpp(DeviceController controller,
+                                                       String remotePath, File dir)
+            throws Exception {
+        String macAddr = controller.snapshot().getMac();
+        if (remotePath.endsWith("/")) {
+            List<String> names;
+            com.longcheer.agent.spp.SppByteStream lsStream = sppOpener.open(macAddr);
+            try {
+                LcExporter lsExporter = exporterFactory.create();
+                try {
+                    names = lsExporter.listRemoteDirOverSpp(controller, remotePath, lsStream);
+                } finally {
+                    closeQuietly(lsExporter);
+                }
+            } finally {
+                lsStream.close();
+            }
+            List<LcExporter.ExportedFile> out = new ArrayList<>();
+            List<String> failures = new ArrayList<>();
+            boolean first = true;
+            for (String name : names) {
+                String path = name.startsWith("/") ? name : remotePath + name;
+                try {
+                    out.addAll(exportViaSpp(controller, path, dir)); // 单文件=独立新会话
+                    first = false;
+                } catch (Exception e) {
+                    if (first) {
+                        throw e; // 首文件失败 = 通道未就绪，整体快速中止
+                    }
+                    AgentLog.w(TAG, "SPP 目录单文件失败跳过: " + path + " - " + e.getMessage());
+                    failures.add(path);
+                }
+            }
+            if (out.isEmpty()) {
+                throw new LcExporter.ExportException("SPP 目录导出全部失败: " + failures);
+            }
+            return out;
+        }
+        com.longcheer.agent.spp.SppByteStream stream = sppOpener.open(macAddr);
+        try {
+            LcExporter exporter = exporterFactory.create();
+            try {
+                return exporter.exportOverSpp(controller, remotePath, dir, stream);
+            } finally {
+                closeQuietly(exporter);
+            }
+        } finally {
+            stream.close();
+        }
     }
 
     /** 单文件经 EXPORT_FRAME/EXPORT_END 帧上传（seq 从 1 连续编号）。 */

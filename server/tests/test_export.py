@@ -221,9 +221,15 @@ async def test_export_error_result(runtime, agent):
     assert await runtime.store.list_files() == []
 
 
-async def test_export_replaces_unclosed_session(runtime, agent):
-    """同 agent 新导出请求取代未闭环旧会话（对齐 LogReceiver 语义）。"""
+async def test_export_rejects_while_running(runtime, agent):
+    """同 agent 有进行中导出时新请求 409（真机实证：顶替会让结果错记/帧丢弃）；
+    僵尸会话（超 TTL）允许取代。"""
+    from wireless_server.transfer.exportrecv import EXPORT_SESSION_TTL_S
     first = await _request_and_ack(runtime, agent)
+    with pytest.raises(ValueError, match="进行中的导出"):
+        await _request_and_ack(runtime, agent)
+    # 僵尸化后允许取代（get_export 返回公开视图，直接改内部会话时间戳）
+    runtime.transfer.exportrecv._exports[AGENT]["_t0"] -= EXPORT_SESSION_TTL_S + 1
     second = await _request_and_ack(runtime, agent)
     assert first != second
     exp = runtime.transfer.exportrecv.get_export(AGENT)

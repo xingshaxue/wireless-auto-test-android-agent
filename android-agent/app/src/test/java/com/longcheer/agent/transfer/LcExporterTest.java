@@ -24,6 +24,7 @@ import java.util.UUID;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.mock;
@@ -54,12 +55,18 @@ public class LcExporterTest {
         int silentOpens;                // 前 N 次 061 不应答（超时重发场景）
         boolean noOver;                 // 不发 FILE_EXPORT_OVER（收尾超时场景）
         int splitFrameAt = -1;          // ≥0 时数据帧在该偏移切成两个 Notify 包
+        int truncateBlockIndex = -1;    // ≥0 时第 N 块（0 起）截断发送（模拟下行 notify 丢包）
+        int truncateBlockTo = 9;        // 截断后只发前 N 字节
+        int junkAfterBlockIndex = -1;   // ≥0 时第 N 块后插入一个幽灵垃圾包（真机实测帧间插入）
+        boolean dropNext062;            // 吞掉下一个 062（模拟上行 062 丢失）
+        boolean freeRun;                // SPP 模式：061 后连续推完所有块 + 自动 OVER
         int cccdStatus = 0;
 
         private byte[] current;
         private int offset;
         private byte[] lastGoodFrame;
         private boolean corruptPending;
+        private int blockCount;
 
         FakeExportFirmware(GattResponseBus bus, String mac) {
             this.bus = bus;
@@ -68,18 +75,20 @@ public class LcExporterTest {
 
         private void notifyBinary(byte[] frame) {
             if (splitFrameAt > 0 && frame.length > splitFrameAt + 1) {
-                bus.onNotify(mac, LcExporter.LC_CHAR_UUID,
-                        Arrays.copyOfRange(frame, 0, splitFrameAt));
-                bus.onNotify(mac, LcExporter.LC_CHAR_UUID,
-                        Arrays.copyOfRange(frame, splitFrameAt, frame.length));
+                emit(Arrays.copyOfRange(frame, 0, splitFrameAt));
+                emit(Arrays.copyOfRange(frame, splitFrameAt, frame.length));
             } else {
-                bus.onNotify(mac, LcExporter.LC_CHAR_UUID, frame);
+                emit(frame);
             }
         }
 
         private void notifyAscii(String line) {
-            bus.onNotify(mac, LcExporter.LC_CHAR_UUID,
-                    (line + "\r\n").getBytes(StandardCharsets.US_ASCII));
+            emit((line + "\r\n").getBytes(StandardCharsets.US_ASCII));
+        }
+
+        /** 回包出口（默认 BLE notify；SPP fake 覆盖为入队）。 */
+        void emit(byte[] data) {
+            bus.onNotify(mac, LcExporter.LC_CHAR_UUID, data);
         }
 
         private static void putU32(byte[] buf, int off, long v) {
@@ -108,6 +117,10 @@ public class LcExporterTest {
                 byte[] bad = frame.clone();
                 bad[bad.length - 1] ^= 0xFF; // 破坏累加和
                 return bad;
+            }
+            if (blockCount++ == truncateBlockIndex) {
+                // 只发帧的前段（尾部 notify 丢失）；lastGoodFrame 保留完整帧供 063 重传
+                return Arrays.copyOfRange(frame, 0, Math.min(truncateBlockTo, frame.length));
             }
             return frame;
         }
@@ -140,6 +153,13 @@ public class LcExporterTest {
                 // 真机实证（2026-09-25 p67）：大小帧后固件立即自动推第 1 块，不等 062
                 if (current.length > 0) {
                     notifyBinary(buildBlock());
+                    // SPP 自由流（真机抓包）：061 后连续推完所有块 + 自动 OVER，无需 062
+                    while (freeRun && offset < current.length) {
+                        notifyBinary(buildBlock());
+                    }
+                    if (freeRun && !noOver) {
+                        notifyAscii("AT^FILE_EXPORT_OVER\0");
+                    }
                 }
             }
         }
@@ -162,6 +182,14 @@ public class LcExporterTest {
                     return;
                 }
                 notifyBinary(buildBlock());
+                if (blockCount - 1 == junkAfterBlockIndex) {
+                    // 真机实测：帧间被插入一个 224B 非帧幽灵包（帧本身校验完好）
+                    byte[] junk = new byte[224];
+                    for (int i = 0; i < junk.length; i++) {
+                        junk[i] = (byte) (i * 37 + 11);
+                    }
+                    notifyBinary(junk);
+                }
             }
             if (offset >= current.length && !noOver) {
                 notifyAscii("AT^FILE_EXPORT_OVER\0");
@@ -174,26 +202,39 @@ public class LcExporterTest {
             assertEquals(LcExporter.LC_SERVICE_UUID, serviceUuid);
             assertEquals(LcExporter.LC_CHAR_UUID, charUuid);
             assertTrue("LC 通道写入一律 WRITE_NR", noResponse);
-            writes.add(payload.clone());
             bus.onWrite(mac, charUuid, 0);
+            handleWrite(payload);
+            return true;
+        }
+
+        /** 命令处理（BLE writeCharacteristic 与 SPP fake channel 共用）。 */
+        void handleWrite(byte[] payload) {
+            writes.add(payload.clone());
             String cmd = new String(payload, StandardCharsets.US_ASCII);
+            if (cmd.endsWith("\0")) {
+                cmd = cmd.substring(0, cmd.length() - 1); // SPP 061 的 C 字符串终止符
+            }
             if (cmd.startsWith("00AT^LS=")) {
                 List<String> names = dirs.get(cmd.substring("00AT^LS=".length()));
                 if (names != null) {
+                    String dir = cmd.substring("00AT^LS=".length());
                     for (String name : names) {
-                        notifyAscii("F " + files.get(cmd.substring("00AT^LS=".length())
-                                + name).length + " " + name);
+                        String key = name.startsWith("/") ? name : dir + name;
+                        notifyAscii("F " + files.get(key).length + " " + name);
                     }
                 }
                 notifyAscii("OK");
             } else if (cmd.startsWith("061")) {
                 open(cmd.substring(3));
             } else if (cmd.equals("062")) {
-                serve(false);
+                if (dropNext062) {
+                    dropNext062 = false; // 上行丢失：不应答
+                } else {
+                    serve(false);
+                }
             } else if (cmd.equals("063")) {
                 serve(true);
             }
-            return true;
         }
 
         @Override
@@ -206,6 +247,50 @@ public class LcExporterTest {
         @Override public void discoverServices() { }
         @Override public void requestMtu(int mtu) { }
         @Override public void readCharacteristic(UUID serviceUuid, UUID charUuid) { }
+    }
+
+    /** SPP 内存固件通道：write=命令处理（复用 FakeExportFirmware），read=阻塞队列取响应块。 */
+    static class FakeSppChannel implements com.longcheer.agent.spp.SppClient.SocketChannel {
+        final FakeExportFirmware fw;
+        final java.util.concurrent.BlockingQueue<byte[]> incoming =
+                new java.util.concurrent.LinkedBlockingQueue<>();
+        volatile boolean closed;
+
+        FakeSppChannel(GattResponseBus bus, String mac) {
+            fw = new FakeExportFirmware(bus, mac) {
+                @Override
+                void emit(byte[] data) {
+                    incoming.offer(data);
+                }
+            };
+            // SPP 与 BLE 同为 062 拉取式（真机抓包：SPP 不会自由流，062 一发一块，
+            // 区别只是块长 40960 级），mock 用默认拉取语义即可。
+        }
+
+        @Override
+        public void write(byte[] data) {
+            fw.handleWrite(data);
+        }
+
+        @Override
+        public int read(byte[] buf) {
+            try {
+                byte[] c = incoming.poll(5, java.util.concurrent.TimeUnit.SECONDS);
+                if (c == null || closed) {
+                    return -1;
+                }
+                System.arraycopy(c, 0, buf, 0, c.length);
+                return c.length;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return -1;
+            }
+        }
+
+        @Override
+        public void close() {
+            closed = true;
+        }
     }
 
     private GattResponseBus bus;
@@ -304,6 +389,24 @@ public class LcExporterTest {
     }
 
     @Test
+    public void directoryModeAcceptsAbsoluteLsEntries() throws Exception {
+        // 真机实测：固件 LS 条目回全路径（"F <size> /data/offlinelog//log4.gz"），
+        // 绝对路径直接用，不再拼目录前缀。
+        firmware.files.put("/logs/a.txt", content(10));
+        firmware.files.put("/logs/b.txt", content(20));
+        firmware.dirs.put("/logs/", Arrays.asList("/logs/a.txt", "/logs/b.txt"));
+
+        List<LcExporter.ExportedFile> result = exporter.export(controller, "/logs/", exportDir);
+
+        assertEquals(2, result.size());
+        assertTrue(commands().contains("061/logs/a.txt"));
+        assertTrue(commands().contains("061/logs/b.txt"));
+        for (String cmd : commands()) {
+            assertFalse("绝对路径不得再拼前缀: " + cmd, cmd.contains("/logs//logs/"));
+        }
+    }
+
+    @Test
     public void sizeFrameGluedWithFirstDataFrame() throws Exception {
         // B319 实证：061 大小帧与首数据帧粘连，字节流消费须正确切分。
         byte[] data = content(300);
@@ -359,6 +462,96 @@ public class LcExporterTest {
             fail("缺 FILE_EXPORT_OVER 应抛 ExportException");
         } catch (LcExporter.ExportException e) {
             assertTrue(e.getMessage().contains("FILE_EXPORT_OVER"));
+        }
+    }
+
+    @Test
+    public void midBlockNotifyLossRecoversVia063() throws Exception {
+        // 真机实测：长传输中 BLE notify 丢包 → 块收不全。此时绝不能发 062
+        // （固件会推下一块，流永久错位），必须排干残块 + 063 重传当前块。
+        byte[] data = content(400); // blockSize=128 → 4 块
+        firmware.files.put("/data/big.bin", data);
+        firmware.truncateBlockIndex = 1; // 第 2 块尾部 notify 丢失
+        exporter.dataTimeoutMs = 600;
+
+        List<LcExporter.ExportedFile> result = exporter.export(controller, "/data/big.bin", exportDir);
+
+        assertArrayEquals(data, Files.readAllBytes(result.get(0).file.toPath()));
+        assertArrayEquals(sha256(data), result.get(0).sha256);
+        assertTrue("下行丢包须走 063 重传", countCommand("063") >= 1);
+        // 块 1..3 各一次 062 + EOF 收尾一次 = 4；多发说明锁步被打乱
+        assertEquals(4, countCommand("062"));
+    }
+
+    @Test
+    public void interFrameJunkIsSkippedWithout063() throws Exception {
+        // 真机实测（2026-09-26 抓包）：帧间被插入 224B 幽灵垃圾包，帧本身校验完好。
+        // 期望：扫描重同步跳过垃圾，不走 063，文件逐字节正确。
+        byte[] data = content(400); // blockSize=128 → 4 块
+        firmware.files.put("/data/big.bin", data);
+        firmware.junkAfterBlockIndex = 1; // 第 2 块后插幽灵包
+
+        List<LcExporter.ExportedFile> result = exporter.export(controller, "/data/big.bin", exportDir);
+
+        assertArrayEquals(data, Files.readAllBytes(result.get(0).file.toPath()));
+        assertArrayEquals(sha256(data), result.get(0).sha256);
+        assertEquals("帧间垃圾不得触发 063", 0, countCommand("063"));
+        assertEquals(4, countCommand("062")); // 块 1..3 + EOF 收尾
+    }
+
+    @Test
+    public void uplink062LossRecoversVia063AndReplayDiscard() throws Exception {
+        // 上行 062 丢失场景（锁步核心）：agent 发 062 被吞 → 块未到 → 063。
+        // 固件"当前块"是 agent 已写入的上一块 → 重播 → agent 识别丢弃 → 062 前进。
+        byte[] data = content(400); // blockSize=128 → 4 块
+        firmware.files.put("/data/big.bin", data);
+        firmware.dropNext062 = true; // 吞掉块 1 的 062
+
+        List<LcExporter.ExportedFile> result = exporter.export(controller, "/data/big.bin", exportDir);
+
+        assertArrayEquals(data, Files.readAllBytes(result.get(0).file.toPath()));
+        assertArrayEquals(sha256(data), result.get(0).sha256);
+        assertEquals(data.length, result.get(0).size);
+        assertTrue(countCommand("063") >= 1);
+    }
+
+    @Test
+    public void sppExportCompletes() throws Exception {
+        // SPP 承载（RFCOMM 字节流）跑同一套 061/062/063：单文件逐字节正确。
+        FakeSppChannel channel = new FakeSppChannel(bus, MAC);
+        byte[] data = content(300);
+        channel.fw.files.put("/data/a.bin", data);
+        com.longcheer.agent.spp.SppByteStream stream =
+                new com.longcheer.agent.spp.SppByteStream((mac, timeoutMs) -> channel);
+        stream.connect(MAC);
+        try {
+            List<LcExporter.ExportedFile> result =
+                    exporter.exportOverSpp(controller, "/data/a.bin", exportDir, stream);
+            assertArrayEquals(data, Files.readAllBytes(result.get(0).file.toPath()));
+            assertArrayEquals(sha256(data), result.get(0).sha256);
+        } finally {
+            stream.close();
+        }
+    }
+
+    @Test
+    public void sppDirectoryExportCompletes() throws Exception {
+        // SPP 承载目录模式：LS 列举 + 逐文件导出。
+        FakeSppChannel channel = new FakeSppChannel(bus, MAC);
+        channel.fw.files.put("/logs/a.txt", content(10));
+        channel.fw.files.put("/logs/b.txt", content(20));
+        channel.fw.dirs.put("/logs/", Arrays.asList("a.txt", "b.txt"));
+        com.longcheer.agent.spp.SppByteStream stream =
+                new com.longcheer.agent.spp.SppByteStream((mac, timeoutMs) -> channel);
+        stream.connect(MAC);
+        try {
+            List<LcExporter.ExportedFile> result =
+                    exporter.exportOverSpp(controller, "/logs/", exportDir, stream);
+            assertEquals(2, result.size());
+            assertEquals("a.txt", result.get(0).name);
+            assertEquals("b.txt", result.get(1).name);
+        } finally {
+            stream.close();
         }
     }
 

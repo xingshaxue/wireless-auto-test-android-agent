@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import struct
+import time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, BinaryIO
@@ -35,6 +36,10 @@ _U16 = struct.Struct(">H")
 
 # 已完成导出记录保留上限（防内存膨胀）
 _DONE_KEEP = 200
+
+# 导出会话僵尸 TTL：agent 中途死亡留下的 RUNNING 会话超过此时长允许被取代
+# （BLE 大目录导出实测 40+ 分钟，取 2 小时余量）。
+EXPORT_SESSION_TTL_S = 2 * 3600.0
 
 # register_file 回调（TransferManager.register_file，含配额检查）
 RegisterFileFn = Callable[..., Awaitable[str]]
@@ -76,8 +81,15 @@ class ExportReceiver:
         export_id = "export-" + uuid.uuid4().hex[:8]
         old = self._exports.get(agent_id)
         if old is not None:
-            self._finish(old, "ERROR")  # 上一会话未闭环即被新请求取代
-            logger.warning("agent %s 上一导出 %s 未闭环，被 %s 取代",
+            # agent 导出单线程串行：上一会话未闭环时新请求一律 409，
+            # 不允许顶替——顶替会让旧任务的结果错记到新会话、新任务的帧
+            # 在旧会话关闭后被丢弃（真机实测目录导出与单文件导出互相污染）。
+            # 例外：会话超过 TTL（agent 中途死亡的僵尸会话）允许取代。
+            if time.monotonic() - old.get("_t0", 0.0) < EXPORT_SESSION_TTL_S:
+                raise ValueError(f"agent {agent_id} 有进行中的导出 {old['exportId']}，"
+                                 "待其闭环后再下发")
+            self._finish(old, "ERROR")
+            logger.warning("agent %s 僵尸导出会话 %s 超 TTL 被 %s 取代",
                            agent_id, old["exportId"], export_id)
         dest_dir = (Path(self._settings.storage.files_dir)
                     / "exports" / export_id)
@@ -89,7 +101,7 @@ class ExportReceiver:
             "exportId": export_id, "agentId": agent_id, "deviceMac": device_mac,
             "remotePath": remote_path, "dir": str(dest_dir),
             "files": [], "errors": [], "state": "RUNNING",
-            "_handles": {}, "_hashers": {},
+            "_handles": {}, "_hashers": {}, "_t0": time.monotonic(),
         }
         logger.info("agent %s 请求设备导出 exportId=%s %s:%s → %s",
                     agent_id, export_id, device_mac, remote_path, dest_dir)

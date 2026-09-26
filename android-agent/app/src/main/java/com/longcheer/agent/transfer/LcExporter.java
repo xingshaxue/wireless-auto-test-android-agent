@@ -58,17 +58,28 @@ public class LcExporter {
     static final int MAX_BLOCK_SIZE = 1 << 20;
 
     static final long OPEN_TIMEOUT_MS = 5000L;   // 061 应答
+    /** SPP 061 应答超时：固件流可能排在 LS 拖尾/前会话残留之后（真机实证
+     *  固件 export start 了但大小帧延迟 >5s 到达），给足余量。 */
+    static final long SPP_OPEN_TIMEOUT_MS = 12000L;
     static final long DATA_TIMEOUT_MS = 8000L;   // 062/063 数据帧
     static final long OVER_TIMEOUT_MS = 5000L;   // FILE_EXPORT_OVER 收尾
     static final long LS_TIMEOUT_MS = 5000L;     // AT^LS 列举收尾
     /** 拉块前短等缓冲（固件自动推的块已在途就不用发 062）。 */
     static final long QUICK_POLL_MS = 500L;
+    /** SPP 模式的拉块前短等：压到 80ms 保持链路占满——拉长间隙会让手环 pm
+     *  把 RFCOMM 打进 sniff（792ms 间隔），块传输拖慢甚至 8s 超时（真机实测
+     *  速率从 96KB/s 跌到 4KB/s 的根源）；误发 062 有锁步+重播去重兜底。 */
+    static final long SPP_QUICK_POLL_MS = 80L;
     /** 建连后残留流排放静默期（固件跨 BLE 连接续推上次导出，真机实测）。 */
     static final long DRAIN_QUIET_MS = 300L;
+    /** 残留排放封顶（SPP 自由流残留可能持续推十几秒）。 */
+    static final long DRAIN_MAX_MS = 12000L;
     /** 总大小防御上限（512MB），扫描误判防护。 */
     static final long MAX_FILE_SIZE = 512L * 1024 * 1024;
     /** 固件 BLE 导出块长上限（B.6：4480）。 */
     static final long LC_BLOCK_MAX = 4480L;
+    /** 固件 SPP 导出块长上限（真机抓包校准：40960B/块，留 margin）。 */
+    static final long SPP_BLOCK_MAX = 65536L;
 
     /** 导出失败（协议拒绝/超时/校验超限）。 */
     public static final class ExportException extends Exception {
@@ -94,7 +105,8 @@ public class LcExporter {
         }
     }
 
-    /** 数据帧读取结果（校验失败时 data 非空、checksumOk=false）。 */
+    /** 数据帧读取结果（校验失败时 data 非空、checksumOk=false；帧头非法/块长越界等
+     *  流错位损坏帧 data=null、checksumOk=false，由 pullBlock 排干重传）。 */
     private static final class DataFrame {
         final byte[] data;
         final boolean checksumOk;
@@ -119,6 +131,8 @@ public class LcExporter {
     private GattClient client;
     private GattResponseBus.NotifyListener notifyListener;
     private volatile boolean closed = false;
+    /** SPP 承载（非 null 时走 RFCOMM 而非 BLE GATT；生命周期归调用方）。 */
+    private com.longcheer.agent.spp.SppByteStream spp;
 
     /** ASCII 回包邮箱（Notify 回调线程投入，会话线程阻塞取；已 trim）。 */
     private final BlockingQueue<String> mailbox = new LinkedBlockingQueue<>();
@@ -132,6 +146,8 @@ public class LcExporter {
     private int binConsumedTotal = 0;
     /** 大小帧扫描时预读的块帧头（awaitDataFrame 优先消费）。 */
     private byte[] pendingBlockHeader;
+    /** 上一个已写入的块内容（重播块识别：063 语义歧义时固件可能重播上一块）。 */
+    private byte[] lastBlock;
     private int binEnd = 0;
     /** true = 061~数据收齐的导出窗口，窗口内 Notify 一律按二进制处理。 */
     private volatile boolean binaryPhase = false;
@@ -155,12 +171,18 @@ public class LcExporter {
     public List<ExportedFile> export(DeviceController device, String remotePath, File exportDir)
             throws ExportException {
         mac = device.snapshot().getMac();
-        client = clientProvider.getActiveClient(mac);
-        if (client == null) {
-            throw new ExportException("no active gatt client for " + mac);
+        if (spp != null) {
+            // SPP 承载：RFCOMM 已建连（调用方负责），原始块分接复用字节流机；
+            // 无 CCCD/notify 概念，可靠流无 BLE 丢包/幽灵插入。
+            spp.setChunkListener(this::classifyChunk);
+        } else {
+            client = clientProvider.getActiveClient(mac);
+            if (client == null) {
+                throw new ExportException("no active gatt client for " + mac);
+            }
+            registerNotifyTap();
+            subscribeCccd();
         }
-        registerNotifyTap();
-        subscribeCccd();
         drainStaleData();
         if (!exportDir.isDirectory() && !exportDir.mkdirs()) {
             throw new ExportException("cannot create export dir: " + exportDir);
@@ -171,13 +193,74 @@ public class LcExporter {
             if (names.isEmpty()) {
                 throw new ExportException("目录为空或列举无文件: " + remotePath);
             }
+            // LS 拖尾排放：LS 应答量大（24 条 ~1.4KB），sniff 下要数秒才发完，
+            // 不排净会让首个 061 的大小帧排在拖尾之后超时（真机实证目录模式
+            // 061 集体"无响应"的根源之一——固件实际已 export start，是 agent 等不及）。
+            drainStaleData();
+            List<String> failures = new ArrayList<>();
+            boolean first = true;
             for (String name : names) {
-                out.add(exportOne(remotePath + name, exportDir));
+                // 固件 LS 条目回全路径（真机实测 "F /data/offlinelog//log19.gz"），
+                // 相对名才需要拼接目录前缀
+                String path = name.startsWith("/") ? name : remotePath + name;
+                try {
+                    out.add(exportOne(path, exportDir));
+                    first = false;
+                } catch (ExportException e) {
+                    // 首文件 061 超时 = 通道未就绪（LS 拖尾/固件流阻塞），
+                    // 整体快速失败，不再逐文件空磨（22 个文件 × 重试 = 6 分钟白费）。
+                    if (first && e.getMessage() != null && e.getMessage().contains("061 无响应")) {
+                        throw new ExportException("目录模式首文件 061 无响应，"
+                                + "通道未就绪，整体中止: " + path);
+                    }
+                    AgentLog.w(TAG, "目录模式单文件失败跳过: " + path + " - " + e.getMessage());
+                    failures.add(path + ": " + e.getMessage());
+                }
+            }
+            if (out.isEmpty()) {
+                throw new ExportException("目录导出全部失败: " + failures);
             }
         } else {
             out.add(exportOne(remotePath, exportDir));
         }
         return out;
+    }
+
+    /**
+     * SPP 承载导出：同一套 061/062/063 协议，传输通道换 RFCOMM（调用方已完成
+     * 开经典蓝牙前置与建连，通道生命周期归调用方）。
+     */
+    public List<ExportedFile> exportOverSpp(DeviceController device, String remotePath,
+                                            File exportDir,
+                                            com.longcheer.agent.spp.SppByteStream channel)
+            throws ExportException {
+        this.spp = channel;
+        try {
+            return export(device, remotePath, exportDir);
+        } finally {
+            this.spp = null;
+        }
+    }
+
+    /**
+     * SPP 目录列举（仅 LS，不导出）。固件导出流在 BLE+SPP 双通道并存时路由
+     * 不稳定（真机实证：多文件单会话 061 死信、FILE_EXPORT_OVER 出现在 BLE
+     * 通道），而"新 SPP 会话 + 直接 061"单文件导出稳定——目录导出因此拆成
+     * "一次 LS + 每文件独立 SPP 会话"（FileExportManager 编排）。
+     */
+    public List<String> listRemoteDirOverSpp(DeviceController device, String dirPath,
+                                             com.longcheer.agent.spp.SppByteStream channel)
+            throws ExportException {
+        this.spp = channel;
+        try {
+            mac = device.snapshot().getMac();
+            spp.setChunkListener(this::classifyChunk);
+            drainStaleData();
+            return listDir(dirPath);
+        } finally {
+            spp.setChunkListener(null);
+            this.spp = null;
+        }
     }
 
     /** 解除 Notify 分接（幂等）。 */
@@ -186,6 +269,9 @@ public class LcExporter {
             return;
         }
         closed = true;
+        if (spp != null) {
+            spp.setChunkListener(null);
+        }
         if (notifyListener != null) {
             responseBus.removeNotifyListener(notifyListener);
             notifyListener = null;
@@ -206,9 +292,10 @@ public class LcExporter {
             if (line.contains("OK")) {
                 return names;
             }
-            // 含 F 的行为文件条目：按空格切分，最后一个 token 是文件名。
-            if (line.contains("F")) {
-                String[] tokens = line.trim().split("\\s+");
+            // "F <路径>" 行为文件条目（真机实测固件回全路径）：最后一个 token 是路径。
+            String trimmed = line.trim();
+            if (trimmed.startsWith("F ") || trimmed.equals("F")) {
+                String[] tokens = trimmed.split("\\s+");
                 String name = tokens[tokens.length - 1];
                 if (!name.isEmpty()) {
                     names.add(name);
@@ -235,6 +322,7 @@ public class LcExporter {
             throw e;
         }
         AgentLog.i(TAG, "export start: " + remotePath + " size=" + totalSize);
+        lastBlock = null; // 重播块识别按文件重置
 
         File dest = new File(exportDir, name);
         MessageDigest sha = newSha256();
@@ -256,7 +344,8 @@ public class LcExporter {
         } finally {
             exitBinaryPhase();
         }
-        // B.6/B319 语义：062 是"拉下一块"，数据耗尽时再发一次 062 固件才回 FILE_EXPORT_OVER。
+        // B.6/B319 语义：062 是"拉下一块"，数据耗尽时再发一次 062 固件才回 FILE_EXPORT_OVER
+        // （BLE/SPP 统一；SPP 抓包曾见 OVER 自动来，但 062 触发是 B.6 权威语义）。
         writeAscii("062");
         awaitExportOver(remotePath);
         return new ExportedFile(name, remotePath, dest, totalSize, sha.digest());
@@ -264,20 +353,37 @@ public class LcExporter {
 
     /** 061 开始导出：回 '@'+u32BE 总大小；无响应 5s 重发，上限 {@link #OPEN_RETRY_MAX} 次。
      *  调用方须已 enterBinaryPhase（本方法不退出，留给数据拉取阶段）。
-     *  固件跨会话续推残留数据（真机实测），须扫描定位合法大小帧而非取流头 5 字节。 */
+     *  固件跨会话续推残留数据（真机实测），须扫描定位合法大小帧而非取流头 5 字节。
+     *  SPP 承载按 B319 bt226 方言轮询命令变体（"061<path>"/"061/<path>"/"061<basename>"），
+     *  命中的变体记住供同会话后续文件使用。 */
     private long openExport(String remotePath) throws ExportException {
+        String[] candidates = spp == null
+                ? new String[]{"061" + remotePath}
+                : new String[]{"061" + remotePath, "061/" + remotePath,
+                        "061" + basename(remotePath)};
         for (int attempt = 1; attempt <= OPEN_RETRY_MAX; attempt++) {
-            writeAscii("061" + remotePath);
-            Long size = awaitSizeFrame(openTimeoutMs);
+            int idx = (sppOpenVariantIdx + attempt - 1) % candidates.length;
+            String cmd = candidates[idx];
+            // B319 bt226 实证：SPP 通道的 061 必须以 '\0'（C 字符串终止符）结尾，
+            // 否则固件流解析器不分发（裸 061 是死信；BLE 按写包分发不需要）。
+            writeAscii(spp != null ? cmd + "\0" : cmd);
+            Long size = awaitSizeFrame(spp != null ? SPP_OPEN_TIMEOUT_MS : openTimeoutMs);
             if (size != null) {
+                if (idx != 0) {
+                    AgentLog.i(TAG, "SPP 导出打开命令方言命中[" + idx + "]: " + cmd);
+                    sppOpenVariantIdx = idx; // 同会话后续文件直接用命中方言
+                }
                 return size;
             }
             AgentLog.w(TAG, "061 无响应，重发 (" + attempt + "/" + OPEN_RETRY_MAX + "): "
-                    + remotePath);
+                    + cmd);
         }
         throw new ExportException("061 无响应（重发 " + OPEN_RETRY_MAX + " 次仍失败）: "
                 + remotePath);
     }
+
+    /** SPP 打开命令方言候选下标（首次探测命中后复用，bt226 各固件形态不一）。 */
+    private int sppOpenVariantIdx = 0;
 
     /**
      * 扫描字节流定位"大小帧"：'@'+u32BE(总大小) 且紧随块帧头('@'+u32BE 块长≤4480)。
@@ -312,7 +418,7 @@ public class LcExporter {
             }
             if (next[0] == '@') {
                 long blen = u32be(next, 1);
-                if (blen > 0 && blen <= LC_BLOCK_MAX && blen <= size) {
+                if (blen > 0 && blen <= blockMax() && blen <= size) {
                     pendingBlockHeader = next; // 首个块帧头留给数据拉取
                     return size;
                 }
@@ -324,33 +430,83 @@ public class LcExporter {
 
     /**
      * 拉一块数据：固件在 061 后会自动推第 1 块（真机抓包实证），因此先尝试直接读帧，
-     * 读不到才写 062 拉取下一块——预防式发 062 会让固件提前推下一块/到 EOF 后行为异常，
-     * 把字节流打乱（真机实测校验失败根源）。校验失败写 063 重传，每块上限 {@link #RETRANS_MAX} 次。
+     * 读不到才写 062 拉取下一块。
+     *
+     *  <p>严格锁步（对齐 B319 原厂语义：其 062 重发定时器被注释禁用，只用 063 纠错）：
+     *  每块至多主动发一次 062；之后的任何异常（块未到/残块/校验失败）一律排干+063
+     *  重传当前块。重发 062 会让固件收到重复拉取、与 063 交织成块序置换——每块校验
+     *  都过、总字节数精确但内容顺序错乱（真机实测 gz 解压结构完好、尾部 CRC 报错）。
+     *
+     *  <p>重播块识别（B319 都没有的防护）：063 语义歧义（上行 062 曾丢失时固件的
+     *  "当前块"其实是 agent 已写入的上一块）或固件重播时，会收到与上一块字节完全
+     *  相同的帧——校验必过但绝不能二次写入（否则后续块整体平移），识别后丢弃并
+     *  062 前进。每块合计上限 {@link #RETRANS_MAX} 次。
      */
     private byte[] pullBlock(String remotePath) throws ExportException {
-        // 先短等读缓冲：自动推/已在途的帧直接消费；固件在 061 后立即自动推第 1 块。
-        DataFrame frame = awaitDataFrame(QUICK_POLL_MS);
+        // 先短等读缓冲：自动推/已在途的帧直接消费；固件在 061 后立即自动推第 1 块
+        // （BLE/SPP 均真机实证；SPP 同样需要 062 拉取后续块，只是块长 40960 级）。
+        DataFrame frame = awaitDataFrame(spp != null ? SPP_QUICK_POLL_MS : QUICK_POLL_MS);
+        boolean pulled = false; // 本块是否已发过 062（严格锁步：每块至多一次主动 062）
         for (int resends = 0; ; resends++) {
             if (frame != null && frame.checksumOk) {
+                if (lastBlock != null && Arrays.equals(frame.data, lastBlock)) {
+                    if (resends >= RETRANS_MAX) {
+                        throw new ExportException("块拉取超限（重播丢弃 "
+                                + RETRANS_MAX + " 次）: " + remotePath);
+                    }
+                    AgentLog.w(TAG, "重播块（与上一块字节相同），丢弃并 062 前进: "
+                            + remotePath);
+                    writeAscii("062");
+                    frame = awaitDataFrame(dataTimeoutMs);
+                    continue;
+                }
+                lastBlock = frame.data;
                 return frame.data;
             }
             if (resends >= RETRANS_MAX) {
-                throw new ExportException("块拉取超限（062 超时/063 重传 "
+                throw new ExportException("块拉取超限（062/063 重试 "
                         + RETRANS_MAX + " 次）: " + remotePath);
             }
-            if (frame == null) {
-                AgentLog.w(TAG, "062 无响应，重发 062 (" + (resends + 1) + "): " + remotePath);
+            if (frame == null && !pulled) {
+                // 本块尚未拉取（无帧在途）：发 062。每块只走一次这个分支。
+                AgentLog.d(TAG, "062 拉取块: " + remotePath);
                 writeAscii("062");
+                pulled = true;
             } else {
-                // 校验失败只发 063——先 062 再 063 会让固件连推两块，缓冲错位（真机实测）。
-                AgentLog.w(TAG, "块校验失败，发 063 重传 (" + (resends + 1) + "): " + remotePath);
+                // 已发过 062 后块仍未到/残块/校验失败：排干+063 重传当前块。
+                drainBinaryResidue();
+                AgentLog.w(TAG, "块未到/不完整/校验失败，排干后发 063 重传 (" + (resends + 1)
+                        + "): " + remotePath);
                 writeAscii("063");
             }
             frame = awaitDataFrame(dataTimeoutMs);
         }
     }
 
-    /** 读一帧数据：'@'+u32BE(块长)+数据+4B 大端累加和；超时返回 null。 */
+    /** 块级残留排放：下行丢包后缓冲里的残块字节一律丢弃（063 重传前调用）。 */
+    private void drainBinaryResidue() {
+        int drained = 0;
+        while (true) {
+            byte[] b = awaitBinary(1, DRAIN_QUIET_MS);
+            if (b == null) {
+                break;
+            }
+            drained++;
+        }
+        synchronized (binLock) {
+            binStart = binEnd = 0;
+        }
+        if (drained > 0) {
+            AgentLog.i(TAG, "drained block residue bytes: " + drained);
+        }
+    }
+
+    /** 读一帧数据：'@'+u32BE(块长)+数据+4B 大端累加和。
+     *  帧间幽灵垃圾（真机实测：每 1-2 帧被插入一个 224B 非帧包，帧本身校验完好）
+     *  由 {@link #scanFrameHeader} 跳过并重同步——帧有自描述帧头+校验和双重保护，
+     *  跳过帧间垃圾安全；真正的帧内损坏由校验和兜底走 063。
+     *  干净超时（无完整帧在途）返回 null；帧头已定位但数据未收全/校验失败
+     *  返回损坏帧标记（pullBlock 排干后发 063 重传）。 */
     private DataFrame awaitDataFrame(long timeoutMs) throws ExportException {
         long deadline = nowMs() + timeoutMs;
         byte[] header;
@@ -358,24 +514,15 @@ public class LcExporter {
             header = pendingBlockHeader; // 大小帧扫描时预读的合法块帧头
             pendingBlockHeader = null;
         } else {
-            header = awaitBinary(5, timeoutMs);
+            header = scanFrameHeader(deadline);
         }
         if (header == null) {
             return null;
         }
-        if (header[0] != '@') {
-            AgentLog.w(TAG, "frame head illegal: " + Integer.toHexString(header[0] & 0xFF)
-                    + " headerHex=" + bytesToHex(header) + " binPending=" + binPending()
-                    + " binConsumed=" + binConsumedTotal);
-            throw new ExportException("数据帧头非法: " + Integer.toHexString(header[0] & 0xFF));
-        }
         long len = u32be(header, 1);
-        if (len > MAX_BLOCK_SIZE) {
-            throw new ExportException("数据块长度越界: " + len);
-        }
         byte[] rest = awaitBinary((int) len + 4, Math.max(1, deadline - nowMs()));
         if (rest == null) {
-            return null;
+            return new DataFrame(null, false); // 帧头已读但数据未收全：残块
         }
         byte[] data = Arrays.copyOfRange(rest, 0, (int) len);
         long expected = u32be(rest, (int) len);
@@ -391,6 +538,54 @@ public class LcExporter {
                     + " binPending=" + binPending());
         }
         return new DataFrame(data, actual == expected);
+    }
+
+    /** 扫描字节流定位块帧头：'@'+u32BE(块长 1..{@link #blockMax})。
+     *  帧间幽灵垃圾字节跳过并计数告警；'@' 但长度非法整体当垃圾继续扫。
+     *  超时返回 null。 */
+    private byte[] scanFrameHeader(long deadline) {
+        int skipped = 0;
+        while (true) {
+            long remain = deadline - nowMs();
+            if (remain <= 0) {
+                logSkippedJunk(skipped);
+                return null;
+            }
+            byte[] b = awaitBinary(1, remain);
+            if (b == null) {
+                logSkippedJunk(skipped);
+                return null;
+            }
+            if (b[0] != '@') {
+                skipped++;
+                continue;
+            }
+            byte[] lenB = awaitBinary(4, Math.max(1, deadline - nowMs()));
+            if (lenB == null) {
+                logSkippedJunk(skipped);
+                return null;
+            }
+            long len = u32be(lenB, 0);
+            if (len > 0 && len <= blockMax()) {
+                logSkippedJunk(skipped);
+                byte[] header = new byte[5];
+                header[0] = '@';
+                System.arraycopy(lenB, 0, header, 1, 4);
+                return header;
+            }
+            skipped += 5; // '@' 但长度越界：整体视为垃圾继续扫
+        }
+    }
+
+    /** 当前承载的块长上限：BLE 4480（B.6）/ SPP 40960 级（真机抓包校准）。 */
+    private long blockMax() {
+        return spp != null ? SPP_BLOCK_MAX : LC_BLOCK_MAX;
+    }
+
+    private void logSkippedJunk(int skipped) {
+        if (skipped > 0) {
+            AgentLog.w(TAG, "skipped inter-frame junk bytes: " + skipped);
+        }
     }
 
     /** 数据收齐后等 ASCII FILE_EXPORT_OVER 收尾（逐文件）。 */
@@ -416,19 +611,28 @@ public class LcExporter {
             return;
         }
         notifyListener = (notifyMac, charUuid, value) -> {
-            if (closed || !LC_CHAR_UUID.equals(charUuid) || !notifyMac.equals(mac)) {
+            if (!LC_CHAR_UUID.equals(charUuid) || !notifyMac.equals(mac)) {
                 return;
             }
-            if (value == null || value.length == 0) {
-                return;
-            }
-            if (binaryPhase || value[0] == '@') {
-                offerBinary(value);
-            } else {
-                offerAscii(value);
-            }
+            classifyChunk(value);
         };
         responseBus.addNotifyListener(notifyListener);
+    }
+
+    /** 到达字节块归类（BLE notify 与 SPP read 共用）：二进制窗口内或 '@' 开头
+     *  进字节流缓冲，否则进 ASCII 行通道。SPP 模式二进制窗口内的非 '@' 块同时
+     *  tee 一份到 ASCII 邮箱（固件可能用 ASCII 错误文本应答 061，诊断可见）。 */
+    /** 到达字节块归类（BLE notify 与 SPP read 共用）：二进制窗口内或 '@' 开头
+     *  进字节流缓冲，否则进 ASCII 行通道。 */
+    private void classifyChunk(byte[] value) {
+        if (closed || value == null || value.length == 0) {
+            return;
+        }
+        if (binaryPhase || value[0] == '@') {
+            offerBinary(value);
+        } else {
+            offerAscii(value);
+        }
     }
 
     /** CCCD 竞态（同 LcProtoTransferAdapter）：等 descriptor 写完成回调再发命令。 */
@@ -546,7 +750,9 @@ public class LcExporter {
         enterBinaryPhase();
         try {
             int drained = 0;
-            while (true) {
+            // SPP 自由流残留可能持续推十几秒（被中止的大文件导出），封顶等待
+            long deadline = nowMs() + DRAIN_MAX_MS;
+            while (nowMs() < deadline) {
                 byte[] b = awaitBinary(1, DRAIN_QUIET_MS);
                 if (b == null) {
                     break;
@@ -616,9 +822,20 @@ public class LcExporter {
         }
     }
 
-    /** 写 ASCII 命令帧（WRITE_NR）。 */
+    /** 写 ASCII 命令帧（BLE = WRITE_NR；SPP = socket write）。 */
     private void writeAscii(String command) throws ExportException {
-        if (closed || client == null) {
+        if (closed) {
+            throw new ExportException("exporter closed");
+        }
+        if (spp != null) {
+            try {
+                spp.write(command.getBytes(StandardCharsets.US_ASCII));
+            } catch (java.io.IOException e) {
+                throw new ExportException("spp write failed: " + e.getMessage());
+            }
+            return;
+        }
+        if (client == null) {
             throw new ExportException("exporter closed or not connected");
         }
         client.writeCharacteristic(LC_SERVICE_UUID, LC_CHAR_UUID,
