@@ -137,6 +137,10 @@ public class LcExporterTest {
                 notifyBinary(glued);
             } else {
                 notifyBinary(sizeFrame);
+                // 真机实证（2026-09-25 p67）：大小帧后固件立即自动推第 1 块，不等 062
+                if (current.length > 0) {
+                    notifyBinary(buildBlock());
+                }
             }
         }
 
@@ -151,12 +155,16 @@ public class LcExporterTest {
                 notifyBinary(lastGoodFrame);
             } else {
                 if (offset >= current.length) {
-                    return; // 已无剩余（粘连首块场景多发的 062）
+                    // 真机语义（B319）：062 拉到 EOF 时固件回 FILE_EXPORT_OVER。
+                    if (!noOver) {
+                        notifyAscii("AT^FILE_EXPORT_OVER\0");
+                    }
+                    return;
                 }
                 notifyBinary(buildBlock());
             }
             if (offset >= current.length && !noOver) {
-                notifyAscii("FILE_EXPORT_OVER");
+                notifyAscii("AT^FILE_EXPORT_OVER\0");
             }
         }
 
