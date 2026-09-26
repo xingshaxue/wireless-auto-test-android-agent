@@ -31,7 +31,7 @@
 | `server/` | 生产级服务器（Python 3.12 asyncio + FastAPI + SQLite）：协议网关、命令台账、配置中心、文件服务、事件入库、测试编排引擎、REST API + WS |
 | `web/` | Web 控制台（Vue 3 + Element Plus）：Dashboard、Agents（命令下发）、设备管理、文件传输、测试编排（场景编辑器）、事件流 |
 | `tools/` | `mock_server.py`（协议参考实现/联调自测）、`emulator_smoke.sh`（模拟器冒烟） |
-| `无限自动化框架SDD_V1.5.md` | 软件设计文档（唯一事实来源，含附录 A 协议字段级定义） |
+| `无限自动化框架SDD_V1.6.md` | 软件设计文档（唯一事实来源，含附录 A 协议字段级定义） |
 | `M1-M5任务拆解_Jira导入.csv` | 里程碑任务拆解（逐条引用 SDD 章节） |
 | `SDD真机测试用例库.csv` | 真机测试用例库（P0~P2，按 SDD 章节组织） |
 
@@ -98,4 +98,4 @@ python3 tools/mock_server.py --selftest
 ## 文档
 
 - 各模块详细文档：`android-agent/README.md`、`server/README.md`、`web/README.md`
-- 设计与协议：`无限自动化框架SDD_V1.5.md`（附录 A = 19 命令 + 18 事件逐字段定义）
+- 设计与协议：`无限自动化框架SDD_V1.6.md`（附录 A = 21 命令 + 20 事件逐字段定义）

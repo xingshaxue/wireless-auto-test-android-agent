@@ -3,8 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 文档名称 | 无限自动化框架 Android 端软件设计文档 |
-| 版本 | V1.5（开发基线） |
-| 日期 | 2026-08-21 |
+| 版本 | V1.6（真机联调同步） |
+| 日期 | 2026-09-26 |
 | 范围 | 服务器 — Android 手机 — BLE 多 DUT 架构中的 Android 端详细设计 |
 | 参考资料 | 设计讨论记录（见附录 B） |
 
@@ -18,6 +18,7 @@
 | V1.3 | 2026-08-21 | 设计级修订（调度与状态机 8 项收口）：时间片预算纳入建连开销、新增 setupBudgetMs 且切片自 READY 起算(5.2/6.2/6.4)；RECONNECTING 改为不持槽的退避计时状态、到期经 WAITING_SLOT 重新调度(4.1/7.5)；新增欠账老化 agingThresholdMs 防轮询饥饿(5.2/12.4)；蓝牙关闭批量迁移限定连接态设备(12.10)；PAUSE 在连接中/活动中延迟生效(pendingPause)、与 pinned 文件传输的挂起/中止交互明确化(7.7)；16.5 伪代码收口：tick 循环改状态白名单+显式防重入、requestSlot 幂等 upsert(3.6)、selectVictim 补 notifyBoost 过滤、冷却过滤落分配侧、补时间片到期释放与建连超预算强释放逻辑 |
 | V1.4 | 2026-08-21 | 协议与模型收口（19 项）：TCP 流 JSON 长度前缀分帧与二进制帧解复用规则(16.3)；CONNECT_DEVICE 幂等/默认即时连接/兼作 ERROR 恢复入口、ACK 语义明确(7.2)；REMOVE 与 RESET 清理队列逐条回 ACK、新增错误码 2004(7.7/7.8/12.9)；新增 RESET 软重置流程(7.8)；snapshot 改不可变副本+显式写接口的并发约定(8.1)；ManagedDeviceInfo 增 notifyBoostUntil、pendingCommands 统一 QueuedTask 承载命令与轮询任务(8.1/7.4.1/8.6)；Condition 模型对齐规则 JSON 的 value 与 BETWEEN 区间(8.7)；tick 校验条件修正为 >最小间隔/2 即钳制(6.4/16.4)；POLL_RESULT 去 requestId、增 stale 字段(10.3)；POLL_DATA_STALE 不带错误码、改带 lastPollTime/reason(12.9)；新增 FILE_REQUEST 上行事件打通规则触发传输(7.3.2/10.2/7.6)；调度计时统一单调时钟(9)；BLE Executor 多线程按 MAC 分片(3.8/9)；配置 Schema 补 11 个运行旋钮(16.4)；FILE_DOWNLOAD_RESUME 统一 seq 口径、文件哈希定 SHA-256(7.6/16.3)；MTU 阶梯协商与吞吐预估前提(3.2)；GATT 码表实测校准说明、133 区分来源(12.1)；DUT 地址随机化(RPA)前提风险(15)；测试策略补全迁移表单测/故障注入/Schema 校验用例(14) |
 | V1.5 | 2026-08-21 | 开发基线收口（2 项硬缺口 + 4 项并行项）：新增**附录 A 通信协议字段级定义**——通用信封与编码约定(A.1：byte[] base64 / MAC / UUID / 枚举)、19 条命令(A.2)与 18 类事件(A.3)逐字段表；**Decoder 字段映射入配置**（16.4 `devices[].fields` + 8.9 FieldMapping 模型 + 7.3.2 规则引用加载时校验）；10.2 补 `REGISTER` 事件；文件传输分块写定为 WRITE_NO_RESPONSE、`WRITE_CHAR` 增 `writeType` 参数(7.6/A.2)；配置增 `configVersion` 与"整项替换、下一 tick 原子生效"更新约定(16.4)；14.3 补量化验收目标基线（一轮耗时/命令延迟 P95/24h 内存与失败率/老化获槽上限） |
+| V1.6 | 2026-09-26 | 真机联调（手环 p67）落地同步（8 项）：A.2 命令 19→21 条——补 `FILE_EXPORT` 与新增 `SET_TRANSFER_CHANNEL`（传输通道运行中整项替换，任务启动时读快照选路、进行中不换）；A.3 事件 18→20 类——补 `EXPORT_RESULT` 与新增 `EXPORT_PROGRESS`（~500ms 节流、覆盖式）；7.6 增 **SPP 加速通道**（DeviceConfig.transferChannel ble/spp/auto、RFCOMM 承载 33x 协议、auto 握手失败回退 BLE）与 **fileId+SHA-256 下载去重**（`<fileId>.part`/`.bin` 缓存、命中直进 BLE 段），`FILE_TRANSFER` 增 `fileName` 字段；新增 7.9 设备文件导出流程（061/062/063 锁步拉取、目录模式、SPP 承载、EXPORT_FRAME/END 回传）；16.3 帧类型增 0x05/0x06；16.4 DeviceConfig 增 `transferChannel`、运行中更新清单补 `SET_TRANSFER_CHANNEL`；新增 7.10 批量 OTA（server 侧 BatchOrchestrator 编排，agent 协议零改动） |
 
 ---
 
@@ -43,7 +44,7 @@ Android 端通过轮询方式持续查询每台受管设备的状态。
 |------|------|------|
 | BLE 并发连接数 | **2~5 台** | 由配置决定上限，需考虑 Android 蓝牙栈实际能力 |
 | 受管设备总数 | **≥ 20 台，可配置扩展** | 远超并发连接数，因此连接资源必须时分复用 |
-| 传输方式 | BLE（GATT） | 服务器 ↔ Android 为 TCP/IP（JSON/Protobuf） |
+| 传输方式 | BLE（GATT）；文件传输/导出可选经典蓝牙 SPP 加速通道（7.6） | 服务器 ↔ Android 为 TCP/IP（JSON/Protobuf） |
 
 ### 1.4 术语与缩写
 
@@ -618,6 +619,16 @@ GATT 通知（Notify/Indicate）是 DUT 主动上报数据的通道，处理链�
 
 DUT 端传输协议（标准 OTA 服务或自定义写入特征）通过**传输适配器（TransferAdapter）**接口接入，分块、CRC、续传逻辑与具体 DUT 协议解耦。
 
+#### 传输通道（transferChannel：ble / spp / auto）
+
+每台设备的传输通道由 `DeviceConfig.transferChannel` 决定（16.4），运行中可经 `SET_TRANSFER_CHANNEL` 整项替换（A.2）：agent 写 Controller 快照即时生效，文件传输/导出任务**启动时**读快照选路，**进行中的任务不换通道**。
+
+- **`ble`（缺省）**：BLE GATT 承载，走 LC 工厂通道（`LcProtoTransferAdapter`）；
+- **`spp`**：经典蓝牙 RFCOMM 加速通道。前置：经 BLE LC 通道写 `00AT^BT_ENABLE` + `00AT^BT_ACCESS_SET=3` 开经典蓝牙（已开过时固件幂等回 OK），随后 insecure RFCOMM 免配对直连（`spp/SppClient`）；数据面由 `spp/SppTransferAdapter` 承载同一套 33x 协议（不同块尺寸：39600B 块切 960B 包连续写，块尾 4B CRC32 小端，每块等 `310`/`311`），真机实测 BLE 12.5KB/s → SPP 100KB/s+；
+- **`auto`**：`FallbackTransferAdapter`——先跑 SPP 握手，握手失败则关闭 SPP 通道改用 BLE LC 重新握手；回退只发生在握手阶段，数据传输中的失败按断线语义重建适配器重跑握手（仍从 SPP 开始尝试）。
+
+SPP 传输期间 BLE 连接保持（设备管理/回退通道），任务结束只关 SPP socket。
+
 #### 长任务与槽位调度
 
 - 文件传输任务将目标设备**临时升级为常驻设备（pinned）**，占用槽位直到传输完成，调度器期间不踢出该设备；
@@ -640,10 +651,10 @@ DUT 端传输协议（标准 OTA 服务或自定义写入特征）通过**传输
 
 #### 传输流程
 
-1. 任务发起两个入口：服务器直接下发 `FILE_TRANSFER`（fileId、大小、SHA-256 哈希、目标 MAC、传输参数）；或规则动作命中（7.3.2）→ Android 上行 `FILE_REQUEST` → 服务器补发 `FILE_TRANSFER`，两者后续流程一致；
-2. Android 经 TCP 接收文件数据，缓存到本地存储并校验哈希（SHA-256）；
+1. 任务发起两个入口：服务器直接下发 `FILE_TRANSFER`（fileId、大小、SHA-256 哈希、目标 MAC、传输参数，可选 `fileName` 原始文件名——`.zip` 结尾时 agent 传输落盘名为 DUT 侧 `/data/ota.zip`）；或规则动作命中（7.3.2）→ Android 上行 `FILE_REQUEST` → 服务器补发 `FILE_TRANSFER`，两者后续流程一致；
+2. Android 经 TCP 接收文件数据，缓存到本地存储并校验哈希（SHA-256；按 fileId 去重，见下文 TCP 侧文件下载协议）；
 3. `CommandDispatcher` 创建 `FileTransferTask`，向 `ConnectionScheduler` 申请 pinned 槽位；
-4. 设备连接 → BLE 握手（元数据协商）→ 分块传输；
+4. 设备连接 → 按任务启动时的通道快照选路（ble / spp / auto，见"传输通道"）→ 握手（元数据协商）→ 分块传输；
 5. 按窗口上报 `FILE_PROGRESS`（百分比、速率）；
 6. 完成 → DUT 校验 → 上报 `FILE_RESULT`；
 7. 解除 pinned 状态，恢复轮询，槽位归还调度；
@@ -660,16 +671,17 @@ DUT 端传输协议（标准 OTA 服务或自定义写入特征）通过**传输
 文件数据不走 JSON 报文（体积开销不可接受），在既有 TCP 长连接上以**二进制帧**传输：
 
 1. 服务器下发 `FILE_TRANSFER`（fileId、大小、哈希、目标 MAC）；
-2. Android 回 `FILE_DOWNLOAD_READY` 后，服务器按二进制帧推送文件：帧头（帧类型 + 序号 + 长度）+ 数据段；
-3. Android 落盘并逐帧校验，收完后校验整体哈希，回 `FILE_DOWNLOAD_ACK`（成功或需重传的帧号）；
-4. TCP 中断 → 下载任务挂起，重连后发 `FILE_DOWNLOAD_RESUME`（携带**已确认的最大连续块号 seq**，与 16.3 帧编号一致；字节偏移 = seq × chunkSize，两端口径统一）续传；
-5. 下载完成后才进入 BLE 传输阶段（7.6 传输流程第 3 步），未下载完不申请 pinned 槽位。
+2. **按 fileId + SHA-256 去重**：agent 先查本地完整缓存 `<fileId>.bin`（存在 + 长度 + SHA-256 全匹配即命中）；命中则跳过整个 TCP 下载段——直接回 `resendSeqs` 为空的 `FILE_DOWNLOAD_ACK`，服务器在 `WAIT_READY` 态收空 ACK 即转 `DOWNLOADED`，不推任何下载帧（零下载帧），任务直进 BLE 段；排队等待并发的任务提升时同样复查缓存；
+3. 未命中：Android 回 `FILE_DOWNLOAD_READY` 后，服务器按二进制帧推送文件：帧头（帧类型 + 序号 + 长度）+ 数据段；下载中文件命名 `<fileId>.part`，与完整缓存区分；
+4. Android 落盘并逐帧校验，收完后校验整体哈希，回 `FILE_DOWNLOAD_ACK`（成功或需重传的帧号）；校验通过将 `.part` 改名为 `<fileId>.bin` 完整缓存，供后续同 fileId 任务（批量 OTA，7.10）去重命中；
+5. TCP 中断 → 下载任务挂起，重连后发 `FILE_DOWNLOAD_RESUME`（携带**已确认的最大连续块号 seq**，与 16.3 帧编号一致；字节偏移 = seq × chunkSize，两端口径统一）续传；
+6. 下载完成后才进入 BLE 传输阶段（7.6 传输流程第 3 步），未下载完不申请 pinned 槽位。
 
 #### 本地存储管理
 
-- 传输缓存目录固定（如 `files/transfer/`），文件按 `taskId` 命名；
-- 磁盘配额：缓存总量上限可配置（如 1GB），超限拒绝新任务并上报；
-- 清理策略：BLE 传输完成后立即删除；失败任务保留（默认 7 天）供排查后清除；
+- 传输缓存目录固定（如 `files/transfer/`），文件按 `fileId` 命名：下载中 `<fileId>.part`，校验通过的完整缓存 `<fileId>.bin`；
+- 磁盘配额：缓存总量上限可配置（如 1GB），超限拒绝新任务并上报；缓存命中不占用新配额；
+- 清理策略：成功任务的 `.bin` 缓存**保留**供批量 OTA 复用（不再传完即删）；缓存清除时机 = `RESET`（7.8）、超过 `failedTaskRetentionDays` 保留期的过期清理、SHA-256 不符的新任务覆盖（先删不匹配缓存再下载）；
 - 存储空间不足（可用空间低于阈值）→ 暂停接收新任务，上报 `ERROR`。
 
 ### 7.7 设备移除与暂停恢复流程
@@ -701,6 +713,49 @@ DUT 端传输协议（标准 OTA 服务或自定义写入特征）通过**传输
 4. 设备状态机统一回 `REGISTERED`，轮询计划重置（`nextPollTime = now + intervalMs`），重连计数清零；
 5. 注册表、`AgentConfig`、本地日志缓存保留——等价于 12.6 冷启动完成后的已注册状态，不重新走 TCP 注册（7.1）。
 
+### 7.9 设备文件导出流程（FILE_EXPORT，DUT → 手机 → 服务器）
+
+文件下发的逆向链路：从 DUT 拉取文件（产测日志、缓存数据等）回服务器入库。协议实证见 docs/02 B.6，真机行为见 docs/04。
+
+#### 导出协议（LC 产测通道 061/062/063）
+
+- **开始**：写 `061<设备侧路径>` → 回二进制帧 `'@'` + u32BE（文件总大小）；大小帧可能与首数据帧粘连（061 应答窗口内按字节流消费）；
+- **拉数据**：写 `062` → 回 `'@'` + u32BE（块长）+ 数据 + 4B 大端无符号字节累加和；校验通过 → 追加落盘再发 `062` 拉下一块；校验失败/丢包 → 写 `063` 重传本块；
+- **结束**：数据耗尽后再发一次 `062`，设备回 ASCII `FILE_EXPORT_OVER`（逐文件）；
+- **锁步（lock-step）**：每块至多一次主动 `062`，之后该块只用 `063` 重传；**重播块识别**——与上一块字节比对，固件重播上一块时丢弃不重复落盘；
+- **目录模式**：`remotePath` 以 `/` 结尾 → 先写 `00AT^LS=<目录>` 列举（Notify 多行回包，含 `F` 行取文件名、`OK` 行收尾），再逐文件跑 061；
+- **无断点续传**：任何失败整文件重来；061 无响应 5s 重发（上限 3 次）、062 发出后 8s 无响应重发、063 重传上限 10 次（062 超时与 063 共用每块上限）；写入一律 WRITE_NO_RESPONSE。
+
+#### SPP 承载导出
+
+通道选择复用 `DeviceConfig.transferChannel`（7.6 传输通道）：`spp` = RFCOMM 承载同一套 061/062/063，`auto` = 先 SPP 失败回退 BLE。`spp/SppExportOpener` 完成开通道前置（同 7.6：`00AT^BT_ENABLE` / `00AT^BT_ACCESS_SET=3` → insecure RFCOMM），产出 `SppByteStream` 字节流通道。与 BLE 承载的差异（真机校准）：
+
+- 块长上限：BLE 4480B / SPP 65536B；
+- SPP 的 `061` 必须以 `\0`（C 字符串终止符）结尾，且按方言轮询命令变体（`061<path>` / `061/<path>` / `061<basename>`），命中后同会话复用该方言；
+- SPP 目录模式拆成**一次 LS + 每文件独立 SPP 会话**——规避固件双通道路由不稳定（多文件共用一条 SPP 会话时 061 死信，真机实证）。
+
+#### 任务编排与回传
+
+1. 服务器下发 `FILE_EXPORT`（deviceMac、remotePath，exportId 缺省由 agent 生成；A.2）；
+2. agent 单工作线程串行受理（同 exportId 幂等），pinned 占槽建连、导出期间暂停该设备轮询（对齐 7.6 长任务调度）；
+3. 拉齐的文件经 TCP 二进制帧回传：`EXPORT_FRAME(0x05)` / `EXPORT_END(0x06)`（16.3 扩展；payload = u16BE 文件名长度 + 文件名 UTF-8 + 数据 / 32B SHA-256，每文件独立 seq 序列从 1 连续编号）；服务器校验 SHA-256 后登记 files 表（origin="device"）；
+4. 进行中按 ~500ms 节流上报 `EXPORT_PROGRESS`（覆盖式语义：同 exportId 后到整体取代先到；文件开始/完成必报；`filesTotal=0` 表未知——LS 未完成或单文件模式）；
+5. 收尾上报 `EXPORT_RESULT`（exportId、files 清单、errorCode、detail）；本地暂存成功已上传/失败无续传价值，一律删除。
+
+### 7.10 批量 OTA（server 侧编排协同）
+
+批量 OTA 是 **server 侧一等公民编排模块**（BatchOrchestrator，详见 server README §7.1）：把一个 OTA 包推送到 N 台设备，每台设备独立跑相位机——
+
+```
+QUEUED → TRANSFERRING → UPGRADE_CMD → BLACKOUT → RECONNECTING → VERIFYING → DONE / FAILED / CANCELLED
+```
+
+与 Android 端的协同关系（**agent 协议零改动**）：
+
+- TRANSFERRING 相位复用 §7.6 全链路：`FILE_TRANSFER` + pinned 传输 + TCP 下载去重——同 fileId 的第二批起命中 `<fileId>.bin` 缓存，agent 直回空 `resendSeqs` 的 `FILE_DOWNLOAD_ACK` 进 BLE 段；
+- UPGRADE_CMD / VERIFYING 复用 `WRITE_CHAR`（等 ACK / 等 `POLL_RESULT` 内容匹配）；RECONNECTING 复用 §7.2 `CONNECT_DEVICE` 等 `DEVICE_STATE state=READY`；
+- 并发上限：per-agent 同时传输设备数 ≤ min(请求值 perAgentConcurrency, 全局 `maxConcurrentTransfers`)，跨 agent 天然并行；单设备失败只落本设备记录（失败隔离），不影响批次内其余设备。
+
 ---
 
 ## 8. 数据模型
@@ -727,6 +782,7 @@ class ManagedDeviceInfo {
     int reconnectCount;     // 重连计数
     String stateFlag;       // SET_DEVICE_STATE 动作写入的业务标记（非状态机状态，7.3.2）
     long notifyBoostUntil;  // 通知活跃期截止时间：此前 selectVictim 不踢该设备（7.3.3 / 16.5）
+    String transferChannel; // 文件传输/导出通道快照：ble / spp / auto（默认 ble；SET_TRANSFER_CHANNEL 显式写接口更新，7.6 / 16.4）
 }
 ```
 
@@ -843,6 +899,7 @@ class FileTransferTask {
     String taskId;
     String deviceMac;
     String fileId;
+    String fileName;          // 原始文件名（可选；.zip 结尾时 DUT 侧落 /data/ota.zip，A.2）
     long totalSize;
     long transferredOffset;   // 已确认偏移（断点续传）
     int chunkSize;            // MTU - 3
@@ -906,10 +963,12 @@ class FieldMapping {
 | `STOP_POLLING` | 停止轮询 |
 | `SET_POLLING_INTERVAL` | 动态调整轮询间隔 |
 | `SET_POLL_RULES` | 下发/更新轮询结果处理规则（7.3.2） |
-| `FILE_TRANSFER` | 下发文件传输任务（fileId、大小、哈希、目标 MAC） |
+| `FILE_TRANSFER` | 下发文件传输任务（fileId、大小、哈希、目标 MAC，可带 `fileName`） |
 | `FILE_CANCEL` | 取消文件传输任务 |
+| `FILE_EXPORT` | 设备文件导出（DUT → 手机 → 服务器，7.9） |
 | `SET_MAX_CONNECTIONS` | 设置最大并发连接数（2~5） |
 | `SET_PERSISTENT_DEVICE` | 指定常驻设备，始终占用一个连接槽 |
+| `SET_TRANSFER_CHANNEL` | 传输通道运行中整项替换（ble/spp/auto，7.6 / 16.4） |
 | `REMOVE_DEVICE` | 移除受管设备（7.7） |
 | `PAUSE_DEVICE` / `RESUME_DEVICE` | 暂停/恢复设备调度（7.7） |
 | `UPLOAD_LOG` | 触发日志打包上传（13） |
@@ -938,6 +997,7 @@ class FieldMapping {
 | `TOPOLOGY` | 当前连接的 DUT 拓扑 |
 | `FILE_REQUEST` | 规则动作触发传输时向服务器请求文件（fileId、taskId、目标 MAC）；服务器收后补发 `FILE_TRANSFER`，流程并入 7.6（7.3.2） |
 | `FILE_DOWNLOAD_READY` / `FILE_DOWNLOAD_ACK` / `FILE_DOWNLOAD_RESUME` | 文件下载握手/确认/续传（二进制帧协议，7.6） |
+| `EXPORT_PROGRESS` / `EXPORT_RESULT` | 设备文件导出进度（节流、覆盖式）/ 导出结果（7.9） |
 | `LOG_UPLOAD_DONE` | 日志上传完成（13） |
 
 ### 10.3 报文结构示例
@@ -1055,7 +1115,7 @@ class FieldMapping {
 | 1xxx | GATT/蓝牙错误 | `1001` 连接超时、`1002` 服务发现失败、`1003` 特征不存在 |
 | 2xxx | 协议错误 | `2001` 报文格式错误、`2002` 未知命令、`2003` 设备不存在、`2004` 命令已取消（REMOVE/RESET 清理队列，7.7/7.8） |
 | 3xxx | 资源与配置错误 | `3001` 队列已满、`3002` 命令过期、`3003` 槽位不足、`3004` 磁盘不足 |
-| 4xxx | 文件传输错误 | `4001` 哈希校验失败、`4002` CRC 失败、`4003` DUT 写入拒绝、`4004` 不支持偏移写入 |
+| 4xxx | 文件传输错误 | `4001` 哈希校验失败、`4002` CRC 失败、`4003` DUT 写入拒绝（含导出协议拒绝/超时，7.9）、`4004` 不支持偏移写入 |
 
 原则：Android 端不自行扩展码表，新增错误码随版本发布；未知错误归入对应类别，原始状态码（如 GATT status 133）放在报文体 `rawStatus` 字段透传。`CMD_ACK` / `DEVICE_STATE` / `ERROR` 报文统一带 `errorCode`（本码段）与可选 `rawStatus`（底层原始码），二者并存：`errorCode` 供服务器逻辑判断，`rawStatus` 供排障。`SET_MAX_CONNECTIONS` 驱逐失败、参数越界统一回 `3003`（不走 `2001`）。`POLL_DATA_STALE` 属状态提示而非错误，不携带 `errorCode`，改带 `lastPollTime` 与 `reason`（`NO_SLOT` / `CONNECT_FAILED` 等），供服务器判断过期时长与原因。
 
@@ -1155,6 +1215,7 @@ interface DeviceController {
     void enqueuePollTask(PollingTask task);    // NORMAL
     void setPollingConfig(PollingConfig config);
     void setPollRules(List<PollRule> rules);
+    void setTransferChannel(String channel);   // 传输通道快照写接口（SET_TRANSFER_CHANNEL，7.6 / 16.4）
     boolean isReady();
     DeviceState getState();
     ManagedDeviceInfo snapshot();              // 不可变状态快照（GET_STATUS 用；并发与回写约定见 8.1）
@@ -1272,10 +1333,17 @@ com.longcheer.agent/
 │   ├── RuleEngine.java
 │   ├── ActionExecutor.java
 │   └── PollResultHandler.java
-├── transfer/                       # 文件传输（7.6）
+├── transfer/                       # 文件传输（7.6）与设备文件导出（7.9）
 │   ├── FileTransferManager.java
 │   ├── FileTransferTask.java
-│   └── TransferAdapter.java
+│   ├── TransferAdapter.java        # LcProtoTransferAdapter / FallbackTransferAdapter 等
+│   ├── FileExportManager.java
+│   └── LcExporter.java             # 061/062/063 导出协议
+├── spp/                            # SPP 加速通道（7.6 / 7.9）
+│   ├── SppClient.java              # insecure RFCOMM 直连
+│   ├── SppByteStream.java
+│   ├── SppTransferAdapter.java     # RFCOMM 承载 33x 协议
+│   └── SppExportOpener.java        # 开经典蓝牙前置 + 导出通道开启
 ├── report/                         # 上报与缓存（3.10 / 7.4.1）
 ├── config/                         # AgentConfig / PollingConfig / 规则 JSON 解析（16.4）
 ├── log/                            # 滚动日志 + 崩溃捕获（13）
@@ -1284,7 +1352,7 @@ com.longcheer.agent/
 
 依赖规则：`model` 零依赖；其余包只依赖 `model` 与 `config`；跨包交互一律走 16.1 接口，禁止直接访问对方内部字段。
 
-### 16.3 TCP 二进制帧格式（文件/日志传输）
+### 16.3 TCP 二进制帧格式（文件/日志/导出传输）
 
 **流解复用（JSON 报文 ↔ 二进制帧）**：同一条 TCP 长连接混跑两类流量，接收端按以下规则切包——
 
@@ -1305,6 +1373,8 @@ type 枚举：
 0x02 FILE_END     文件结束帧（payload = 整体哈希，SHA-256 32 字节）
 0x03 FILE_ACK     确认帧（payload = 需重传的块号列表，空 = 全部成功）
 0x04 LOG_FRAME    日志上传数据帧
+0x05 EXPORT_FRAME 设备导出数据帧（7.9；payload = u16BE 文件名长度 + 文件名 UTF-8 + 文件数据）
+0x06 EXPORT_END   设备导出结束帧（payload = u16BE 文件名长度 + 文件名 UTF-8 + 32B SHA-256）
 
 约束：
 - 单帧 payload ≤ 64KB，超出由上层分块；
@@ -1347,6 +1417,7 @@ type 枚举：
       "type": "watch",
       "priority": 5,
       "persistent": false,
+      "transferChannel": "ble",
       "profile": {
         "2A19": "180F",
         "2A21": "180A",
@@ -1387,9 +1458,10 @@ type 枚举：
 - `op` 取值：`GT / GE / LT / LE / EQ / NE / BETWEEN`（BETWEEN 时 `value` 为 `[min, max]`）；
 - `readCharacteristics` 非空时 `intervalMs` ≥ 200ms；`intervalMs` 小于一轮轮询时间的配置给出告警日志（6.4）；
 - `notifyCharacteristics` 为可选，缺失时跳过订阅（7.3.3）；
+- `transferChannel`：设备级文件传输/导出通道，`ble`（缺省）/ `spp` / `auto`（7.6 传输通道）；运行中经 `SET_TRANSFER_CHANNEL` **整项替换**——agent 写 Controller 快照即时生效，文件传输/导出任务启动时读快照选路，**进行中的任务不换通道**；非法 channel 回 `2001`、设备不存在回 `2003`（A.2）；server 侧对应 API `POST /devices/{mac}/transfer-channel`（写库 + 归属 agent 在线即下发等 ACK）；
 - `profile` 为可选的 char→service 映射（4/8 位短 UUID 或完整 UUID），供 `ServiceResolver` 在 `PollStep.serviceUuid` 为 null 时解析；缺失且 step 未显式给 service 时，该特征读/订阅按配置错误回 `1003 特征不存在`；
 - `fields`：Decoder 字段映射（8.9），字段名 → `{char, format, byteOrder, scale, byteOffset}`；`format` ∈ `uint8/uint16/uint32/sint8/sint16/sint32/utf8/bool/hex`，`byteOrder` 默认 `LE`，`scale` 默认 1.0，`byteOffset` 默认 0；**规则 `conditions[].field` 必须在此有映射**，加载时校验，缺失则该设备规则集拒绝加载并上报配置错误；未配置映射的特征按 char UUID 原样上报原始 hex；
-- `configVersion`：配置版本号，随 `REGISTER_ACK` 及每次运行中更新单调递增；Android 端按版本号单调应用（低版本晚到直接丢弃）；运行中更新（`SET_POLLING_INTERVAL` 等）**整项替换、下一 tick 原子生效**，不做字段级合并，进行中的本轮任务按旧配置执行完毕；
+- `configVersion`：配置版本号，随 `REGISTER_ACK` 及每次运行中更新单调递增；Android 端按版本号单调应用（低版本晚到直接丢弃）；运行中更新（`SET_POLLING_INTERVAL` / `SET_POLL_RULES` / `SET_PERSISTENT_DEVICE` / `SET_TRANSFER_CHANNEL` 等）**整项替换、下一 tick 原子生效**，不做字段级合并，进行中的本轮任务按旧配置执行完毕；
 - `tickIntervalMs` 必须 ≤ 全局最小 `intervalMs / 2`（6.4 的硬约束）：**配置值 > 最小 `intervalMs / 2` 即触发告警并钳制到 `最小 intervalMs / 2`**；
 - `cooldownMs` 默认 5000，控制被踢设备的冷却防抖时长，冷却过滤在分配侧执行（5.2 第 5 条 / 16.5）；
 - `setupBudgetMs` 默认 4000，单组建连预算（CONNECTING → READY），超预算强制释放（5.2 第 3 条 / 12.5）；一轮时长估算公式必须包含本项（6.4）；
@@ -1509,7 +1581,7 @@ evaluate(fields, rules):
 
 - 编码约定：`byte[]`（payload、哈希等）一律 **base64 字符串**；MAC 格式 `AA:BB:CC:DD:EE:FF`（大写、冒号分隔）；UUID 支持 4/8 位短格式或 128 位完整格式，解析规则同 16.4 `profile`；枚举字段取枚举名字符串（如 `"state": "READY"`）。
 
-### A.2 服务器 → Android 命令（19 条）
+### A.2 服务器 → Android 命令（21 条）
 
 > 各表仅列命令特有字段，公共字段（`type` / `timestamp` / `requestId`）省略。
 
@@ -1573,12 +1645,28 @@ evaluate(fields, rules):
 | `sha256` | string | 是 | base64 的 32 字节整体哈希（16.3） |
 | `windowSize` | int | 否 | CRC 窗口块数，默认 64 |
 | `chunkSize` | int | 否 | 默认 MTU − 3 |
+| `fileName` | string | 否 | 原始文件名；`.zip` 结尾时 agent 传输落盘名为 DUT 侧 `/data/ota.zip`（7.6） |
 
 **`FILE_CANCEL`** — `taskId`（string，是）。
+
+**`FILE_EXPORT`** — 设备文件导出（7.9，DUT → 手机 → 服务器）
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `deviceMac` | string | 是 | 目标 DUT |
+| `remotePath` | string | 是 | 设备侧路径；以 `/` 结尾 = 目录模式（`00AT^LS` 列举 + 逐文件导出） |
+| `exportId` | string | 否 | 缺省由 agent 生成（`export-<8位hex>`）；重复下发同 exportId 幂等受理；进度/结果走 `EXPORT_PROGRESS` / `EXPORT_RESULT` |
 
 **`SET_MAX_CONNECTIONS`** — `maxSlots`（int，是，2~5；越界或驱逐失败回 `3003`，5.4）。
 
 **`SET_PERSISTENT_DEVICE`** — `deviceMac`（string，是）+ `on`（bool，是）。
+
+**`SET_TRANSFER_CHANNEL`** — 传输通道运行中整项替换（7.6 / 16.4）
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `deviceMac` | string | 是 | 目标 DUT（不存在回 `2003`） |
+| `channel` | string | 是 | `ble` / `spp` / `auto`（非法回 `2001`）；agent 写 Controller 快照即时生效，文件传输/导出任务启动时读快照选路，进行中的任务不换通道 |
 
 **`PAUSE_DEVICE`** — `deviceMac`（string，是）+ `abortTransfer`（bool，否，默认 `false` = 挂起传输，7.7）。
 
@@ -1588,7 +1676,7 @@ evaluate(fields, rules):
 
 **`RESET`** — 无特有字段（7.8）。
 
-### A.3 Android → 服务器事件（18 类）
+### A.3 Android → 服务器事件（20 类）
 
 > 各表仅列事件特有字段，公共字段（`type` / `timestamp`）省略；`CMD_ACK` 另带 `requestId`。
 
@@ -1635,6 +1723,21 @@ evaluate(fields, rules):
 **`FILE_DOWNLOAD_ACK`** — `taskId` + `resendSeqs`（int[]，是；空数组 = 全部成功，16.3）。
 
 **`FILE_DOWNLOAD_RESUME`** — `taskId` + `lastSeq`（int，是；已确认最大连续块号，7.6 / 16.3）。
+
+**`EXPORT_PROGRESS`** — 设备文件导出进度（7.9）
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `exportId` | string | 是 | 对应 `FILE_EXPORT` |
+| `deviceMac` | string | 否 | |
+| `channel` | string | 否 | 实际承载通道：`ble` / `spp` |
+| `file` | string | 是 | 当前文件名 |
+| `fileReceived` / `fileSize` | long | 是 | 当前文件已收 / 总字节数 |
+| `filesDone` / `filesTotal` | int | 是 | 已完成 / 总文件数；`filesTotal=0` 表未知（LS 未完成或单文件模式） |
+
+> 覆盖式语义：同 exportId 后到的进度整体取代先到值；agent 按 ~500ms 节流上报，文件开始/完成必报（不受节流）。
+
+**`EXPORT_RESULT`** — 设备文件导出结果（7.9）：`exportId`（是）+ `deviceMac`（否）+ `files`（array，是，已入库文件清单 `[{name, size, ...}]`）+ `errorCode`（是：0 / 4xxx / 2xxx）+ `detail`（string，否）。
 
 **`LOG_UPLOAD_DONE`** — `requestId` + `errorCode` + `size`（long，实际上传字节数）。
 

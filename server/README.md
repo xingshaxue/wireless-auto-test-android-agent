@@ -1,6 +1,6 @@
 # wireless-server —— 无限自动化测试框架生产服务器
 
-无限自动化测试框架（SDD V1.5）的服务器端生产实现：基于 FastAPI + asyncio 的 Python 服务，
+无限自动化测试框架（SDD V1.6）的服务器端生产实现：基于 FastAPI + asyncio 的 Python 服务，
 同时承载面向 Android Agent 的 TCP 网关与面向使用方的 REST API / WebSocket。
 
 ## 1. 项目简介
@@ -11,7 +11,7 @@
 使用方（curl/脚本/前端）──REST/WS──► server ──TCP（长度前缀JSON + 0xAC42 二进制帧）──► Android Agent ──BLE──► DUT（被测设备）
 ```
 
-- 网关与 agent 之间的报文格式、二进制帧协议实现 SDD V1.5 **附录 A** 与 **§16.3**；
+- 网关与 agent 之间的报文格式、二进制帧协议实现 SDD V1.6 **附录 A** 与 **§16.3**；
   限流错误码等见 §12.9。本系统纯内网部署，无任何鉴权。
 - 与仓库内 `tools/mock_server.py` 的关系：mock 是**联调参考实现**（单文件、交互式、
   内置示例配置），用于与 agent 跑通协议链路和协议自测（`--selftest`）；
@@ -538,5 +538,5 @@ server/
 └── tests/                        # pytest（158 个用例）
 ```
 
-设计依据：仓库根目录《无限自动化框架SDD_V1.5.md》（附录 A、§7.6、§8.4、
+设计依据：仓库根目录《无限自动化框架SDD_V1.6.md》（附录 A、§7.6、§8.4、
 §9、§11.2、§12.9、§14、§16.3、§16.4）。

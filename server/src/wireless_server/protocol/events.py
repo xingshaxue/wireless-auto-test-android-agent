@@ -1,4 +1,4 @@
-"""Android → 服务器事件模型（SDD 附录 A.3，共 19 类 / 21 个 type）。
+"""Android → 服务器事件模型（SDD 附录 A.3，共 20 类 / 22 个 type）。
 
 公共字段 type/timestamp 由 EventEnvelope 承载；requestId 仅 CMD_ACK /
 LOG_UPLOAD_DONE 携带（对账回填，A.1 / 8.4）。解析对 Agent 未来扩展容忍：

@@ -45,4 +45,4 @@ python3 ../tools/mock_server.py --selftest                                 # 协
 
 `com.longcheer.agent`：AgentService（前台服务入口）/ ConsoleActivity（控制台）/
 AgentAssembler（生产装配）/ tcp / ble / registry / schedule / poll / transfer / report /
-config / log / model。设计依据：仓库根目录《无限自动化框架SDD_V1.5.md》。
+config / log / model。设计依据：仓库根目录《无限自动化框架SDD_V1.6.md》。

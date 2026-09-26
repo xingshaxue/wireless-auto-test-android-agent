@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "wireless-server"
 version = "1.0.0"
-description = "无限自动化测试框架生产级服务器（SDD V1.5 附录A/§16.3）"
+description = "无限自动化测试框架生产级服务器（SDD V1.6 附录A/§16.3）"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.110",

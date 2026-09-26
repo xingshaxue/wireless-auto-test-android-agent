@@ -1,4 +1,4 @@
-"""服务器 → Android 命令模型（SDD 附录 A.2，共 20 条）。
+"""服务器 → Android 命令模型（SDD 附录 A.2，共 21 条）。
 
 编码约定（附录 A.1）：byte[] 一律 base64 字符串；MAC 大写冒号格式；
 枚举字段取枚举名字符串；公共信封 type/timestamp/requestId 由 Envelope 基类承载。
