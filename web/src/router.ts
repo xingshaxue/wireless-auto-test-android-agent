@@ -11,6 +11,7 @@ const router = createRouter({
         { path: 'agents', name: 'agents', component: () => import('./views/AgentsView.vue') },
         { path: 'devices', name: 'devices', component: () => import('./views/DevicesView.vue') },
         { path: 'files', name: 'files', component: () => import('./views/FilesView.vue') },
+        { path: 'batch-ota', name: 'batch-ota', component: () => import('./views/BatchOtaView.vue') },
         { path: 'tests', name: 'tests', component: () => import('./views/TestsView.vue') },
         { path: 'events', name: 'events', component: () => import('./views/EventsView.vue') },
       ],

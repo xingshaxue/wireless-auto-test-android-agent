@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 import client, { errorDetail } from '../api/client'
@@ -66,6 +67,12 @@ async function removeFile(f: FileRecord) {
 
 function downloadFile(f: FileRecord) {
   window.open(`/api/files/${f.fileId}/download`)
+}
+
+const router = useRouter()
+
+function goBatchOta(f: FileRecord) {
+  router.push({ path: '/batch-ota', query: { fileId: f.fileId } })
 }
 
 // ---------------- 从设备拉取（FILE_EXPORT，docs/02 B.6） ----------------
@@ -340,9 +347,10 @@ onBeforeUnmount(() => {
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="250" fixed="right">
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <el-button size="small" type="primary" @click="openTransfer(row)">发起传输</el-button>
+            <el-button size="small" type="success" @click="goBatchOta(row)">批量 OTA</el-button>
             <el-button size="small" @click="downloadFile(row)">下载</el-button>
             <el-button size="small" type="danger" @click="removeFile(row)">删除</el-button>
           </template>

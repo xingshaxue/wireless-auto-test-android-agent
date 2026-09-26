@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
+import { Upload } from '@element-plus/icons-vue'
 
 const route = useRoute()
 
@@ -16,6 +17,10 @@ const activeMenu = computed(() => route.path)
         <el-menu-item index="/agents">Agents</el-menu-item>
         <el-menu-item index="/devices">设备管理</el-menu-item>
         <el-menu-item index="/files">文件传输</el-menu-item>
+        <el-menu-item index="/batch-ota">
+          <el-icon><Upload /></el-icon>
+          <span>批量 OTA</span>
+        </el-menu-item>
         <el-menu-item index="/tests">测试编排</el-menu-item>
         <el-menu-item index="/events">事件流</el-menu-item>
       </el-menu>

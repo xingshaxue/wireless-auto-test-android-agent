@@ -276,3 +276,94 @@ export interface TestRunDetail extends TestRunRow {
   report: RunReport | null
   results: RunResultRow[]
 }
+
+// ---------------- 批量 OTA（/api/batch） ----------------
+
+/** POST /api/batch/ota 单台目标设备 */
+export interface BatchOtaTarget {
+  agentId: string
+  deviceMac: string
+}
+
+/** POST /api/batch/ota 升级指令写入参数（缺省走 p67 默认） */
+export interface BatchUpgradeWrite {
+  service: string
+  char: string
+  payloadBase64: string
+}
+
+/** POST /api/batch/ota 版本校验参数 */
+export interface BatchVersionCheck {
+  service?: string
+  char?: string
+  writePayloadBase64?: string
+  expectContains?: string
+}
+
+/** POST /api/batch/ota 请求体 */
+export interface BatchOtaRequest {
+  fileId: string
+  targets: BatchOtaTarget[]
+  blackoutMs?: number
+  perAgentConcurrency?: number
+  reconnectTimeoutMs?: number
+  upgradeWrite?: BatchUpgradeWrite
+  versionCheck?: BatchVersionCheck
+}
+
+/** POST /api/batch/ota 成功响应 */
+export interface BatchStartResult {
+  batchId: string
+}
+
+/** 批次汇总统计 */
+export interface BatchSummaryStats {
+  total: number
+  succeeded: number
+  failed: number
+  remaining: number
+}
+
+/**
+ * GET /api/batch 批次摘要（结构未完全确定，字段全部防御性可选，
+ * 列表页只依赖 batchId/state/createdTs，详情走 GET /api/batch/{id}）
+ */
+export interface BatchSummary {
+  batchId: string
+  state?: string
+  fileId?: string
+  createdTs?: number
+  finishedTs?: number | null
+  summary?: BatchSummaryStats
+  [key: string]: unknown
+}
+
+/** GET /api/batch 响应 */
+export interface BatchListResponse {
+  running: BatchSummary[]
+  done: BatchSummary[]
+}
+
+/** 批次内单设备结果（GET /api/batch/{id}.devices 条目） */
+export interface BatchDeviceResult {
+  agentId: string
+  deviceMac: string
+  /** QUEUED / TRANSFERRING / UPGRADE_CMD / BLACKOUT / RECONNECTING / VERIFYING / DONE / FAILED / CANCELLED */
+  phase: string
+  taskId?: string | null
+  error?: string | null
+  detail?: string | null
+  version?: string | null
+}
+
+/** GET /api/batch/{batchId} 批次详情 */
+export interface BatchDetail {
+  batchId: string
+  /** RUNNING / DONE / CANCELLED */
+  state: string
+  fileId: string
+  createdTs: number
+  finishedTs: number | null
+  summary: BatchSummaryStats
+  devices: BatchDeviceResult[]
+}
