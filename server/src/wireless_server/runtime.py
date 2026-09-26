@@ -15,7 +15,7 @@ import uvicorn
 
 from .api import create_app
 from .configsvc import ConfigManager, Store
-from .engine import ScenarioRunner
+from .engine import BatchOrchestrator, ScenarioRunner
 from .gateway import AgentRegistry, AgentSession, GatewayServer
 from .ingest import EventIngest
 from .ledger import CommandLedger
@@ -39,6 +39,7 @@ class Runtime:
         self.registry = AgentRegistry(settings.gateway)
         self.gateway = GatewayServer(settings.gateway, self.registry)
         self.transfer: TransferManager | None = None
+        self.batch: BatchOrchestrator | None = None
         self.engine = ScenarioRunner(self)  # §14 测试编排引擎
         self._uvicorn: uvicorn.Server | None = None
         self._api_task: asyncio.Task | None = None
@@ -54,6 +55,9 @@ class Runtime:
         # transfer 模块装配（§7.6 / §13）：挂帧处理器、事件 listener 与断连通知
         self.transfer = TransferManager(self)
         self.transfer.attach(self)
+        # 批量 OTA 编排器：依赖 transfer 已装配，挂 ingest 事件监听
+        self.batch = BatchOrchestrator(self)
+        self.batch.attach(self)
         await self.engine.start()  # §14：订阅 ingest 实时事件流
         await self.registry.start()  # 心跳看门狗
         await self.gateway.start()
@@ -67,6 +71,9 @@ class Runtime:
             self._uvicorn = None
             self._api_task = None
         await self.engine.stop()  # 取消全部在跑场景并等其落库收尾
+        if self.batch is not None:
+            await self.batch.close()  # 取消在跑批次（驻内存，不恢复）
+            self.batch = None
         await self.gateway.stop()
         await self.registry.stop()
         if self.transfer is not None:

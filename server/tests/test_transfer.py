@@ -188,6 +188,32 @@ async def test_push_full_cycle(runtime, tmp_path):
     await agent.close()
 
 
+async def test_download_ack_from_wait_ready_skips_push(runtime, tmp_path):
+    """agent 缓存去重：不发 READY 直接回空 ACK → WAIT_READY 直转 DOWNLOADED，零下载帧。"""
+    agent = await _connect_registered(runtime.gateway_port)
+    file_id = await _register_file(runtime, tmp_path)
+
+    task_id = await runtime.transfer.start_transfer(AGENT, file_id, MAC)
+    cmd = await agent.recv_json()
+    assert cmd["type"] == "FILE_TRANSFER" and cmd["taskId"] == task_id
+    await agent.ack_cmd(cmd)
+    assert runtime.transfer.get_task(task_id)["state"] == "WAIT_READY"
+
+    # 缓存命中场景：agent 本地已有完整文件，直接 ACK（resendSeqs 空）表示无需推帧
+    await agent.send({"type": "FILE_DOWNLOAD_ACK", "timestamp": 2,
+                      "taskId": task_id, "resendSeqs": []})
+    task = await _until(lambda: runtime.transfer.get_task(task_id)
+                        if runtime.transfer.get_task(task_id)["state"] == "DOWNLOADED"
+                        else None)
+    assert task["ackedSeq"] == task["totalChunks"] == 3
+    assert task["downloadPercent"] == 100.0
+
+    # 服务端未推任何二进制下载帧
+    with pytest.raises(asyncio.TimeoutError):
+        await agent.recv_frame(timeout=0.3)
+    await agent.close()
+
+
 async def test_resend_on_ack(runtime, tmp_path):
     """ACK 带 resendSeqs=[2] → 重发 seq=2 帧 + FILE_END；再 ACK 空 → DOWNLOADED。"""
     agent = await _connect_registered(runtime.gateway_port)

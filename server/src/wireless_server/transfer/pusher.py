@@ -5,6 +5,10 @@
 FILE_DOWNLOAD_ACK（resendSeqs 非空重发对应帧 + FILE_END；空 = 下载完成）。
 断连 → 任务 PAUSED，agent 重连发 FILE_DOWNLOAD_RESUME（lastSeq，字节偏移
 = seq × chunkSize）从 lastSeq+1 续推。任务状态机驻内存。计时用 loop.time()（§9）。
+
+缓存去重（agent 本地已有同 fileId+SHA-256 的完整文件）：agent 可跳过 READY
+直接回 FILE_DOWNLOAD_ACK（resendSeqs 空），任务从 WAIT_READY 直转 DOWNLOADED，
+零下载帧推送；_on_ack 本就只过滤终态，无需特殊处理。
 """
 
 from __future__ import annotations

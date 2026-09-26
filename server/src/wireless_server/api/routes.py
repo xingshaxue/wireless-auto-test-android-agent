@@ -517,6 +517,42 @@ def build_router(runtime: "Runtime") -> APIRouter:
                                 detail="run 不存在或已结束")
         return {"ok": True, "runId": run_id}
 
+    # ---------------- 批量 OTA（BatchOrchestrator，复用 §7.6 传输链路） ----------------
+
+    def _batch():
+        if runtime.batch is None:
+            raise HTTPException(status_code=503, detail="batch 未装配")
+        return runtime.batch
+
+    @router.post("/batch/ota")
+    async def start_batch_ota(body: dict[str, Any]) -> dict[str, Any]:
+        """发起批量 OTA：同一 OTA 包逐台跑 传输→升级命令→黑窗→回连→验版本。"""
+        try:
+            batch_id = await _batch().start(body)
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        return {"batchId": batch_id}
+
+    @router.get("/batch")
+    async def list_batches() -> dict[str, Any]:
+        """批次快照：进行中 + 最近完成（环形保留，驻内存不持久化）。"""
+        return _batch().list_batches()
+
+    @router.get("/batch/{batch_id}")
+    async def get_batch(batch_id: str) -> dict[str, Any]:
+        detail = _batch().get_batch(batch_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="批次不存在")
+        return detail
+
+    @router.post("/batch/{batch_id}/cancel")
+    async def cancel_batch(batch_id: str) -> dict[str, Any]:
+        if not await _batch().cancel(batch_id):
+            raise HTTPException(status_code=409, detail="批次不存在或已结束")
+        return {"ok": True, "batchId": batch_id}
+
     # ---------------- 事件流水查询 ----------------
 
     @router.get("/events")

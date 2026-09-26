@@ -39,6 +39,10 @@
 - **声明式测试编排引擎**（§14）：JSON 场景（setup/steps/teardown），
   命令下发 + ACK 对账 + 事件断言 + 视图断言，报告落库（test_runs / test_results），
   统计 ACK / 事件等待时延 P50/P95（§14.3）。
+- **批量 OTA 编排**（BatchOrchestrator）：一个 OTA 包推送到 N 台设备，
+  每台独立跑"传输→升级命令→黑窗→回连→验版本"子流程；per-agent 并发上限
+  （默认 1，BLE 带宽瓶颈）、失败隔离、逐设备汇总报告；默认参数对应
+  p67 手环 OTA 实测流程（docs/04）。
 - **REST API + WebSocket**：全部 REST 路由挂 `/api` 前缀；
   `/ws/events` 实时事件推送。
 - **可选 TLS**：gateway 与 api 各自可配置证书；启用后握手失败**不降级**。
@@ -191,6 +195,10 @@ Authorization 头会被忽略）。WebSocket 走 `/ws/events`（同样免鉴权�
 | GET | `/api/tests/runs?limit=50` | — | `{runs, running}` | 历史 run + 在跑快照 |
 | GET | `/api/tests/runs/{run_id}` | — | 报告 JSON | 不存在 404 |
 | POST | `/api/tests/runs/{run_id}/stop` | — | `{ok, runId}` | 取消在跑场景；不存在或已结束 404 |
+| POST | `/api/batch/ota` | 批量 OTA 请求（见 §7.1） | `{batchId}` | 校验失败 422；fileId 未登记 404 |
+| GET | `/api/batch` | — | `{running, done}` | 批次摘要列表（驻内存，环形保留 50） |
+| GET | `/api/batch/{batchId}` | — | 批次详情 | 含逐设备 phase/taskId/error/detail/version；不存在 404 |
+| POST | `/api/batch/{batchId}/cancel` | — | `{ok, batchId}` | 仅 RUNNING 可取消；否则 409 |
 | GET | `/api/events?agent_id=&type=&limit=200` | — | 事件列表 | 按 agentId / type 过滤 |
 
 注：设备配置类 POST（polling-interval / rules / persistent）的响应：
@@ -370,6 +378,77 @@ GET `/api/tests/runs/{run_id}` 返回的报告（同步落库 test_runs / test_r
 `stats` 为 SDD §14.3 要求的时延基线：命令 ACK 时延与事件等待时延的 P50/P95
 （最近秩百分位），可回填用例库基线。
 
+## 7.1 批量 OTA（BatchOrchestrator）
+
+批量是**调度问题**而非测试步骤问题：server 端一等公民模块，把一个 OTA 包
+推送到 N 台设备，每台独立跑子流程，失败隔离，终态出逐设备汇总。agent 协议
+零改动，完全复用现有 FILE_TRANSFER（§7.6）/ WRITE_CHAR / CONNECT_DEVICE
+命令与 DEVICE_STATE / POLL_RESULT 事件。
+
+### 设备相位机
+
+```
+QUEUED → TRANSFERRING → UPGRADE_CMD → BLACKOUT → RECONNECTING → VERIFYING → DONE
+                                                                          ↘ FAILED / CANCELLED
+```
+
+1. **TRANSFERRING**：复用 FilePusher 下发并轮询任务快照直到 COMPLETED
+   （FAILED/CANCELLED → 本设备 FAILED，记 errorCode/detail）。
+2. **UPGRADE_CMD**：WRITE_CHAR 写升级命令并等 ACK。
+3. **BLACKOUT**：固定等待 blackoutMs（可被 cancel 打断）。
+4. **RECONNECTING**：发 CONNECT_DEVICE，等该设备 DEVICE_STATE state=READY
+   （超时 reconnectTimeoutMs → FAILED）。黑窗期设备反复 ERROR/DISCONNECTED
+   由 agent errorRetryMs 自愈（docs/04 §10 实战验证），server 只需等 READY。
+5. **VERIFYING**：WRITE_CHAR 写查版本命令；仅当 versionCheck 给了
+   `expectContains` 才等内容——等该设备 POLL_RESULT 的 raw 中出现该子串
+   （超时 60s → FAILED，detail 记实际最后收到的值），匹配内容记入
+   `version` 字段；不给则 ACK 成功即过。
+
+全部设备终态后批次 → DONE。
+
+### 并发模型与失败隔离
+
+- 同一 agent 内同时进行的设备数 ≤ `perAgentConcurrency`（缺省 1，BLE 带宽
+  瓶颈），per-agent `asyncio.Semaphore` 实现；跨 agent 天然并行；同 agent
+  其余设备排队（QUEUED）。生效值还会被全局参数 `maxConcurrentTransfers`
+  （§16.4，默认 1）截顶。
+- 一台失败（连不上 / 传输校验失败 / 版本不对）只落本设备记录，不影响其余
+  设备；批次 summary 汇总 succeeded / failed / remaining。
+- 全部 asyncio 实现（无独立线程）；批次/设备状态**驻内存**（上限 50 批次
+  环形保留），**server 重启不恢复**。
+
+### API 示例
+
+```bash
+# 发起（全部可选字段取 p67 默认值时可只给 fileId + targets）
+curl -s -X POST -H "Content-Type: application/json" -d '{
+  "fileId": "file-abcd1234",
+  "targets": [{"agentId": "phone-01", "deviceMac": "2C:0D:CF:72:20:84"},
+              {"agentId": "phone-02", "deviceMac": "2C:0D:CF:72:20:85"}],
+  "versionCheck": {"expectContains": "3.101"},
+  "blackoutMs": 30000, "perAgentConcurrency": 1, "reconnectTimeoutMs": 600000
+}' $BASE/api/batch/ota
+# → {"batchId": "batch-xxxxxxxx"}
+
+curl -s $BASE/api/batch                  # {"running": [...], "done": [...]}
+curl -s $BASE/api/batch/batch-xxxxxxxx   # 详情 + 逐设备相位
+curl -s -X POST $BASE/api/batch/batch-xxxxxxxx/cancel
+```
+
+### 默认参数与 p67 的对应关系（docs/04 §2/§7 实测）
+
+| 请求字段 | 默认值 | p67 依据 |
+|---|---|---|
+| `upgradeWrite` | service `1b7e8251-…-562023`，char `8ac32d3f-…-9f626`，payload `00AT^OTA_UPDATE`（base64），writeType `NO_RESPONSE` | LC 通道；特征 props=0x14，带响应写被固件 0xFC 拒绝 |
+| `versionCheck` | 同上 service/char，writePayload `00AT^SWVER=APP`，**不校验内容**（只要求 ACK 成功） | 回 `SWVER=OK,3.101.042monkey`；给 `expectContains` 才启用内容校验 |
+| `blackoutMs` | 30000 | recovery 刷写黑窗实测约 4~6 分钟，此处是"等黑窗开始"的固定段，回连由 reconnectTimeoutMs 兜底 |
+| `reconnectTimeoutMs` | 600000 | 黑窗约 6 分钟 + 回连余量 |
+| `perAgentConcurrency` | 1 | BLE 传输约 12.5 KB/s，同机并发无收益 |
+
+注意：p67 的版本应答经 POLL_RESULT 上报时值为 hex 编码（docs/04 §6），
+若直接对真机用 `expectContains`，子串需按实际上报编码匹配。
+
+
 ## 8. 与 Android Agent 联调
 
 agent 侧配置（详见 `android-agent/README.md`），二选一：
@@ -454,7 +533,7 @@ server/
 │   ├── protocol/                 # 报文模型：commands / events / errors（附录 A）
 │   ├── configsvc/                # 配置集中管理与 configVersion 发号（§16.4）
 │   ├── transfer/                 # 文件推送（分帧/重传/续传）与日志接收（§7.6）
-│   ├── engine/                   # 测试编排：scenario 模型 / runner / report（§14）
+│   ├── engine/                   # 测试编排（§14）+ 批量 OTA 编排（batch.py）
 │   └── api/                      # FastAPI app 工厂与 REST/WS 路由
 └── tests/                        # pytest（158 个用例）
 ```
