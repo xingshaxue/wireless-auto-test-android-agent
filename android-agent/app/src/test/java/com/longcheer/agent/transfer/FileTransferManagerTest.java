@@ -209,8 +209,9 @@ public class FileTransferManagerTest {
         verify(connectionScheduler).unpin(MAC);
         verify(pollingScheduler).suspendPolling(MAC);
         verify(pollingScheduler).resumePolling(MAC);
-        // 完成后文件已删除（§7.6 清理策略）
-        assertFalse(new File(dir, "t1.bin").exists());
+        // 完成后完整缓存保留（<fileId>.bin），供同 fileId 后续任务去重命中；.part 已改名
+        assertTrue(new File(dir, "fw.bin.bin").exists());
+        assertFalse(new File(dir, "fw.bin.part").exists());
     }
 
     @Test
@@ -301,6 +302,80 @@ public class FileTransferManagerTest {
         start("t8", fileContent(4)); // startTransfer 内触发清理
 
         assertFalse(old.exists());
+    }
+
+    // ---------- 文件下载去重（fileId + SHA-256 缓存命中） ----------
+
+    @Test
+    public void cacheHitSkipsDownloadOnSecondTask() {
+        byte[] content = fileContent(16);
+        assertEquals(0, start("t30", content));
+        feedDownload(content); // 第一次：正常下载 + BLE 完成
+        assertEquals(FileTransferTask.FileTransferState.COMPLETED, manager.getTaskState("t30"));
+        assertTrue(new File(dir, "fw.bin.bin").exists()); // 完整缓存保留
+
+        // 第二次同 fileId+sha256：零下载帧，直接空 ACK 就绪并跑完 BLE 会话
+        assertEquals(0, start("t31", content));
+        assertEquals(FileTransferTask.FileTransferState.COMPLETED, manager.getTaskState("t31"));
+        // READY 只在第一次任务发过（命中任务不进下载相位）
+        verify(reporter, times(1)).report(eq("FILE_DOWNLOAD_READY"), any());
+        // 两次任务各上报一次空 resendSeqs 的 ACK（t30 下载完成、t31 缓存命中）
+        verify(reporter, times(2)).report(eq("FILE_DOWNLOAD_ACK"), org.mockito.ArgumentMatchers.argThat(
+                p -> p instanceof Map && ((List<?>) ((Map<String, Object>) p).get("resendSeqs")).isEmpty()));
+        assertEquals(2, adapter.handshakes.get()); // 两次任务都进了 BLE 段
+    }
+
+    @Test
+    public void sha256MismatchDoesNotHitCache() {
+        byte[] content = fileContent(16);
+        start("t32", content);
+        feedDownload(content);
+        assertTrue(new File(dir, "fw.bin.bin").exists());
+
+        // 同 fileId 但 sha256 不同：不命中，旧缓存被清掉，重新走下载流程
+        byte[] other = fileContent(16);
+        other[0] ^= 0x7F;
+        assertEquals(0, manager.startTransfer("t33", "fw.bin", MAC, other.length,
+                sha256(other), BLE_CHUNK, WINDOW));
+        assertFalse(new File(dir, "fw.bin.bin").exists()); // 不匹配缓存已清除
+        verify(reporter, times(2)).report(eq("FILE_DOWNLOAD_READY"), any()); // t32 + t33 都进下载相位
+        assertEquals(FileTransferTask.FileTransferState.PENDING, manager.getTaskState("t33"));
+
+        feedDownload(other);
+        assertEquals(FileTransferTask.FileTransferState.COMPLETED, manager.getTaskState("t33"));
+    }
+
+    @Test
+    public void partialDownloadResidueNotTreatedAsCache() {
+        byte[] content = fileContent(16); // 4 帧
+        start("t34", content);
+        // 只喂前 2 帧（无 FILE_END），模拟下载中断留下 .part 残留
+        for (int seq = 1; seq <= 2; seq++) {
+            int off = (seq - 1) * DL_CHUNK;
+            manager.onFrame(FileFrameCodec.encode(FileFrameCodec.FrameType.FILE_FRAME, seq,
+                    Arrays.copyOfRange(content, off, off + DL_CHUNK)));
+        }
+        assertTrue(new File(dir, "fw.bin.part").exists());
+        assertFalse(new File(dir, "fw.bin.bin").exists());
+
+        // 模拟进程重启：新 manager 同目录，.part 残留不视为命中 → 重新下载
+        manager = newManager(true);
+        assertEquals(0, start("t35", content));
+        verify(reporter, times(2)).report(eq("FILE_DOWNLOAD_READY"), any()); // t34 + t35 都进下载相位
+        feedDownload(content);
+        assertEquals(FileTransferTask.FileTransferState.COMPLETED, manager.getTaskState("t35"));
+        assertTrue(new File(dir, "fw.bin.bin").exists());
+    }
+
+    @Test
+    public void resetClearsTransferCache() {
+        byte[] content = fileContent(8);
+        start("t36", content);
+        feedDownload(content);
+        assertTrue(new File(dir, "fw.bin.bin").exists());
+
+        manager.cancelAll(); // §7.8 RESET：清空传输目录缓存
+        assertFalse(new File(dir, "fw.bin.bin").exists());
     }
 
     // ---------- M4-3 窗口 ACK / NAK / 超时 ----------

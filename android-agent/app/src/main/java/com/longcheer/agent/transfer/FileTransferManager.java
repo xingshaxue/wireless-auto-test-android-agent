@@ -37,6 +37,13 @@ import java.util.function.LongSupplier;
  * <p>注意：§16.3 帧格式无 taskId 字段，因此同一条 TCP 连接同一时刻只有一个
  * 处于下载阶段的任务（下载串行）；BLE 会话并发受 maxConcurrentTransfers 限制，
  * 超额排队（FIFO，按到达顺序）。</p>
+ *
+ * <p>批量 OTA 去重：下载完成且 SHA-256 校验通过的文件以 {@code <fileId>.bin}
+ * 保留在传输目录；后续同 fileId 任务先按 fileId+SHA-256 查缓存，命中则跳过
+ * TCP 下载段——直接上报空 resendSeqs 的 FILE_DOWNLOAD_ACK（server pusher 收到即
+ * 从 WAIT_READY 转 DOWNLOADED，零下载帧）进入 BLE 传输段。下载中的临时文件为
+ * {@code <fileId>.part}，与完整缓存区分；缓存清理由 RESET、过期清理
+ * （failedTaskRetentionDays）与 sha256 不匹配的新任务覆盖触发。</p>
  */
 public class FileTransferManager {
 
@@ -57,7 +64,8 @@ public class FileTransferManager {
     /** 内部任务上下文。 */
     static final class TransferContext {
         final FileTransferTask task;
-        final File file;
+        /** 下载中指向 {@code <fileId>.part}；下载完成改名/缓存命中后指向 {@code <fileId>.bin}。 */
+        volatile File file;
         final byte[] expectedSha256;
         final Set<Integer> receivedSeqs = ConcurrentHashMap.newKeySet();
         final Set<Integer> corruptSeqs = ConcurrentHashMap.newKeySet();
@@ -123,6 +131,8 @@ public class FileTransferManager {
             t.setDaemon(true);
             return t;
         });
+        // agent 启动：清理超过保留期的缓存/残留文件（failedTaskRetentionDays 语义）。
+        cleanupRetainedFiles();
     }
 
     // ==================== M4-1 TCP 侧下载 ====================
@@ -153,6 +163,32 @@ public class FileTransferManager {
             return 2003;
         }
         cleanupRetainedFiles();
+
+        FileTransferTask task = new FileTransferTask(taskId, mac, fileId, totalSize,
+                chunkSize, windowSize, fileName);
+        TransferContext ctx = new TransferContext(task, partFileOf(fileId), sha256);
+
+        // 按 fileId+SHA-256 去重：本地已有校验匹配的完整缓存时跳过 TCP 下载段，
+        // 直接上报空 resendSeqs 的 FILE_DOWNLOAD_ACK（server 收到即从 WAIT_READY 转
+        // DOWNLOADED，不推任何下载帧）进入 BLE 传输段。缓存命中无需占用磁盘配额。
+        File cacheFile = cacheFileOf(fileId);
+        if (cacheMatches(cacheFile, task, sha256)) {
+            ctx.file = cacheFile;
+            ctx.downloadComplete = true;
+            tasks.put(taskId, ctx);
+            AgentLog.i(TAG, "cache hit, skip tcp download: " + taskId + " file=" + fileId);
+            reportDownloadAck(taskId, new ArrayList<>());
+            launchBleSession(ctx);
+            return 0;
+        }
+        // 未命中/校验不符：清掉不匹配缓存与残留 .part，避免污染（进行中任务的文件除外）。
+        if (!isFileInUse(cacheFile)) {
+            deleteQuietly(cacheFile);
+        }
+        if (!isFileInUse(ctx.file)) {
+            deleteQuietly(ctx.file);
+        }
+
         long quotaBytes = config.getDiskQuotaMb() * 1024L * 1024L;
         if (dirSize() + totalSize > quotaBytes) {
             reportError(3004, "disk quota exceeded", mac);
@@ -169,10 +205,6 @@ public class FileTransferManager {
             return 3004;
         }
 
-        FileTransferTask task = new FileTransferTask(taskId, mac, fileId, totalSize,
-                chunkSize, windowSize, fileName);
-        TransferContext ctx = new TransferContext(task, new File(transferDir, taskId + ".bin"),
-                sha256);
         tasks.put(taskId, ctx);
         AgentLog.i(TAG, "task accepted: " + taskId + " file=" + fileId + " size=" + totalSize
                 + " mac=" + mac);
@@ -186,6 +218,17 @@ public class FileTransferManager {
     }
 
     private void beginDownload(TransferContext ctx) {
+        // 排队期间可能已有同 fileId 任务完成下载：提升时复查缓存，命中则不占下载相位。
+        File cacheFile = cacheFileOf(ctx.task.getFileId());
+        if (cacheMatches(cacheFile, ctx.task, ctx.expectedSha256)) {
+            ctx.file = cacheFile;
+            ctx.downloadComplete = true;
+            AgentLog.i(TAG, "cache hit on promote, skip tcp download: " + ctx.task.getTaskId());
+            reportDownloadAck(ctx.task.getTaskId(), new ArrayList<>());
+            launchBleSession(ctx);
+            promoteNextDownload(); // 下载相位仍空闲，继续提升后续排队任务
+            return;
+        }
         activeDownloadTaskId = ctx.task.getTaskId();
         ctx.downloadSuspended = false;
         Map<String, Object> payload = new HashMap<>();
@@ -262,6 +305,16 @@ public class FileTransferManager {
         reportDownloadAck(ctx.task.getTaskId(), new ArrayList<>());
         ctx.downloadComplete = true;
         activeDownloadTaskId = null;
+        // 校验通过：.part 改名为 <fileId>.bin 完整缓存，供同 fileId 后续任务去重命中。
+        File cacheFile = cacheFileOf(ctx.task.getFileId());
+        if (!isFileInUse(cacheFile)) {
+            deleteQuietly(cacheFile);
+        }
+        if (ctx.file.renameTo(cacheFile)) {
+            ctx.file = cacheFile;
+        } else {
+            AgentLog.w(TAG, "rename to cache file failed, keep part: " + ctx.file);
+        }
         promoteNextDownload();
         // 下载完成才进入 BLE 阶段（§7.6：未下载完不申请 pinned 槽位）。
         launchBleSession(ctx);
@@ -562,7 +615,7 @@ public class FileTransferManager {
             activeDownloadTaskId = null;
             ctx.task.setState(FileTransferTask.FileTransferState.CANCELLED);
             reportFileResult(ctx, 2004, "cancelled");
-            deleteQuietly(ctx.file);
+            deleteIfPartial(ctx);
             promoteNextDownload();
             return;
         }
@@ -588,7 +641,7 @@ public class FileTransferManager {
         }
     }
 
-    /** 中止全部进行中任务（§7.8 RESET）：逐任务上报 FILE_RESULT（cancelled/2004）。 */
+    /** 中止全部进行中任务（§7.8 RESET）：逐任务上报 FILE_RESULT（cancelled/2004），并清空传输目录缓存。 */
     public void cancelAll() {
         for (TransferContext ctx : tasks.values()) {
             if (!isTerminal(ctx.task.getState())) {
@@ -598,11 +651,18 @@ public class FileTransferManager {
                     activeDownloadTaskId = null;
                     ctx.task.setState(FileTransferTask.FileTransferState.CANCELLED);
                     reportFileResult(ctx, 2004, "cancelled");
-                    deleteQuietly(ctx.file);
+                    deleteIfPartial(ctx);
                 }
                 synchronized (ctx.monitor) {
                     ctx.monitor.notifyAll();
                 }
+            }
+        }
+        // RESET：清空传输目录全部文件（含完整缓存与残留 .part）。
+        File[] files = transferDir.listFiles();
+        if (files != null) {
+            for (File f : files) {
+                deleteQuietly(f);
             }
         }
     }
@@ -626,7 +686,8 @@ public class FileTransferManager {
     private void completeTask(TransferContext ctx) {
         ctx.task.setState(FileTransferTask.FileTransferState.COMPLETED);
         reportFileResult(ctx, 0, null);
-        deleteQuietly(ctx.file); // 完成后立即删除（§7.6 清理策略）
+        // 成功后保留完整缓存（<fileId>.bin），供同 fileId 后续任务去重命中；
+        // 过期清理由 cleanupRetainedFiles 按 failedTaskRetentionDays 执行（§7.6）。
         AgentLog.i(TAG, "transfer completed: " + ctx.task.getTaskId());
     }
 
@@ -645,11 +706,18 @@ public class FileTransferManager {
     private void cancelTask(TransferContext ctx) {
         ctx.task.setState(FileTransferTask.FileTransferState.CANCELLED);
         reportFileResult(ctx, 2004, "cancelled"); // §12.9：2004 命令已取消
-        deleteQuietly(ctx.file);
+        deleteIfPartial(ctx);
         AgentLog.i(TAG, "transfer cancelled: " + ctx.task.getTaskId());
     }
 
-    /** 失败任务文件超保留期清理；孤儿文件（进程重启残留）同策略处理。 */
+    /** 取消时只清理未下载完的 .part 临时文件；完整缓存（.bin）保留给后续同 fileId 任务。 */
+    private static void deleteIfPartial(TransferContext ctx) {
+        if (ctx.file.getName().endsWith(".part")) {
+            deleteQuietly(ctx.file);
+        }
+    }
+
+    /** 超保留期文件清理（失败任务残留、过期完整缓存、进程重启孤儿文件）；进行中任务的文件不动。 */
     void cleanupRetainedFiles() {
         long retentionMs = config.getFailedTaskRetentionDays() * 24L * 3600 * 1000;
         File[] files = transferDir.listFiles();
@@ -658,15 +726,21 @@ public class FileTransferManager {
         }
         long now = System.currentTimeMillis(); // 墙钟：文件 mtime 比较，非调度计时
         for (File f : files) {
-            String taskId = f.getName().endsWith(".bin")
-                    ? f.getName().substring(0, f.getName().length() - 4) : f.getName();
-            TransferContext ctx = tasks.get(taskId);
-            boolean active = ctx != null && !isTerminal(ctx.task.getState());
-            if (!active && now - f.lastModified() > retentionMs) {
+            if (!isFileInUse(f) && now - f.lastModified() > retentionMs) {
                 AgentLog.i(TAG, "cleanup retained file: " + f.getName());
                 deleteQuietly(f);
             }
         }
+    }
+
+    /** 文件是否被某个非终态任务引用（下载中的 .part / BLE 传输中的缓存）。 */
+    private boolean isFileInUse(File f) {
+        for (TransferContext ctx : tasks.values()) {
+            if (!isTerminal(ctx.task.getState()) && ctx.file.equals(f)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private long dirSize() {
@@ -734,6 +808,27 @@ public class FileTransferManager {
             raf.readFully(chunk);
         }
         return chunk;
+    }
+
+    /** 完整缓存文件：{@code <fileId>.bin}（下载校验通过或缓存命中后的落盘名）。 */
+    private File cacheFileOf(String fileId) {
+        return new File(transferDir, fileId + ".bin");
+    }
+
+    /** 下载中临时文件：{@code <fileId>.part}（与完整缓存区分，不作为命中依据）。 */
+    private File partFileOf(String fileId) {
+        return new File(transferDir, fileId + ".part");
+    }
+
+    /** 完整缓存命中判定：文件存在、大小与任务一致、SHA-256 与命令携带值匹配。 */
+    private static boolean cacheMatches(File cacheFile, FileTransferTask task,
+                                        byte[] expectedSha256) {
+        if (expectedSha256 == null || !cacheFile.isFile()
+                || cacheFile.length() != task.getTotalSize()) {
+            return false;
+        }
+        byte[] actual = sha256Of(cacheFile);
+        return actual != null && Arrays.equals(actual, expectedSha256);
     }
 
     private static byte[] sha256Of(File file) {
