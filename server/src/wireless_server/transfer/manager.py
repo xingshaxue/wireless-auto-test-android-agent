@@ -134,6 +134,9 @@ class TransferManager:
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         return self.pusher.get_task(task_id)
 
+    def list_exports(self) -> dict[str, Any]:
+        return self.exportrecv.list_exports()
+
     # ---------------- 清理 ----------------
 
     async def close(self) -> None:

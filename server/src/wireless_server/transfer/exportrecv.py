@@ -170,7 +170,21 @@ class ExportReceiver:
                     exp["agentId"], name, size, file_id)
 
     def on_event(self, agent_id: str, etype: str, raw: dict) -> None:
-        """EXPORT_RESULT：导出收尾（errorCode=0 成功），关闭残留句柄归档会话。"""
+        """EXPORT_PROGRESS：进行中去抖动进度（agent 节流上报，覆盖式更新）；
+        EXPORT_RESULT：导出收尾（errorCode=0 成功），关闭残留句柄归档会话。"""
+        if etype == "EXPORT_PROGRESS":
+            exp = self._exports.get(agent_id)
+            if exp is None or exp["exportId"] != raw.get("exportId"):
+                return
+            exp["progress"] = {
+                "file": raw.get("file"),
+                "fileReceived": raw.get("fileReceived"),
+                "fileSize": raw.get("fileSize"),
+                "filesDone": raw.get("filesDone"),
+                "filesTotal": raw.get("filesTotal"),
+                "channel": raw.get("channel"),
+            }
+            return
         if etype != "EXPORT_RESULT":
             return
         exp = self._exports.pop(agent_id, None)
@@ -203,6 +217,14 @@ class ExportReceiver:
     def get_export(self, agent_id: str) -> dict[str, Any] | None:
         exp = self._exports.get(agent_id)
         return {k: v for k, v in exp.items() if not k.startswith("_")} if exp else None
+
+    def list_exports(self) -> dict[str, Any]:
+        """进行中会话（含 EXPORT_PROGRESS 实时进度）+ 最近完成记录（新在前）。"""
+        running = [{k: v for k, v in exp.items() if not k.startswith("_")}
+                   for exp in self._exports.values()]
+        done = [{k: v for k, v in exp.items() if not k.startswith("_")}
+                for exp in reversed(self._done[-50:])]
+        return {"running": running, "done": done}
 
     async def close(self) -> None:
         for exp in self._exports.values():

@@ -159,6 +159,17 @@ class SetPersistentDevice(Envelope):
     on: bool
 
 
+class SetTransferChannel(Envelope):
+    """SET_TRANSFER_CHANNEL — 传输通道运行中整项替换（ble/spp/auto，§16.4）。
+
+    agent 侧即时生效于下一次文件传输/导出任务（进行中的任务不换通道）。
+    """
+
+    type: Literal["SET_TRANSFER_CHANNEL"] = "SET_TRANSFER_CHANNEL"
+    deviceMac: str
+    channel: Literal["ble", "spp", "auto"]
+
+
 class PauseDevice(Envelope):
     """PAUSE_DEVICE — abortTransfer=false（默认）= 挂起传输，true = 中止（7.7）。"""
 
@@ -194,7 +205,7 @@ COMMAND_TYPES: dict[str, type[Envelope]] = {
         RegisterAck, ConnectDevice, DisconnectDevice, RemoveDevice, ResumeDevice,
         StartPolling, StopPolling, ReadChar, WriteChar, SetPollingInterval,
         SetPollRules, FileTransfer, FileCancel, FileExport, SetMaxConnections,
-        SetPersistentDevice, PauseDevice, UploadLog, GetStatus, Reset,
+        SetPersistentDevice, SetTransferChannel, PauseDevice, UploadLog, GetStatus, Reset,
     )
 }
 

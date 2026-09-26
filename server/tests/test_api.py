@@ -203,6 +203,42 @@ async def test_rules_and_persistent_no_owner(api):
     assert devices[0]["persistent"] is True
 
 
+async def test_transfer_channel_no_owner(api):
+    """transferChannel 运行中更新：无归属 agent 仅配置生效；非法值 400/422/404。"""
+    await api.put("/api/devices", json=_device())
+    r = await api.post(f"/api/devices/{MAC}/transfer-channel", json={"channel": "spp"})
+    assert r.status_code == 200, r.text
+    assert r.json()["dispatched"] is False
+    devices = (await api.get("/api/devices")).json()
+    assert devices[0]["transferChannel"] == "spp"
+    # 非法枚举值 → 400（ValueError）；非字符串 → 422；设备不存在 → 404
+    r = await api.post(f"/api/devices/{MAC}/transfer-channel", json={"channel": "nfc"})
+    assert r.status_code == 400
+    r = await api.post(f"/api/devices/{MAC}/transfer-channel", json={"channel": 1})
+    assert r.status_code == 422
+    r = await api.post("/api/devices/00:00:00:00:00:00/transfer-channel",
+                       json={"channel": "ble"})
+    assert r.status_code == 404
+
+
+async def test_transfer_channel_dispatch_and_ack(api, agent):
+    """归属 agent 在线：下发 SET_TRANSFER_CHANNEL 并等 ACK，dispatched=True。"""
+    req_task = asyncio.create_task(
+        api.post(f"/api/devices/{MAC}/transfer-channel", json={"channel": "auto"}))
+    cmd = await agent.recv_json()
+    assert cmd["type"] == "SET_TRANSFER_CHANNEL"
+    assert cmd["deviceMac"] == MAC and cmd["channel"] == "auto"
+    await agent.send({"type": "CMD_ACK", "timestamp": 3,
+                      "requestId": cmd["requestId"], "errorCode": 0})
+    resp = await req_task
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["dispatched"] is True
+    assert body["result"]["errorCode"] == 0
+    devices = (await api.get("/api/devices")).json()
+    assert devices[0]["transferChannel"] == "auto"
+
+
 async def test_delete_device_dispatch_and_ack(api, agent):
     """归属 agent 在线：删除 → 下发 REMOVE_DEVICE → 回 ACK → dispatched=True。"""
     req_task = asyncio.create_task(api.delete(f"/api/devices/{MAC}"))

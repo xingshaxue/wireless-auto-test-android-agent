@@ -228,6 +228,22 @@ class ExportResult(EventEnvelope):
     detail: str | None = None
 
 
+class ExportProgress(EventEnvelope):
+    """EXPORT_PROGRESS — 导出进行中进度（agent 按 ~500ms 节流上报，覆盖式语义：
+    同一 exportId 后到的进度整体取代先前值；文件开始/完成必报）。"""
+
+    type: Literal["EXPORT_PROGRESS"]
+    timestamp: int
+    exportId: str
+    deviceMac: str | None = None
+    channel: str | None = None  # ble / spp
+    file: str
+    fileReceived: int
+    fileSize: int
+    filesDone: int = 0
+    filesTotal: int = 0  # 0 = 未知（LS 未完成或单文件模式）
+
+
 class UnknownEvent(BaseModel):
     """未知事件类型：Agent 未来扩展的占位模型，完整保留原始字段，不抛错。"""
 
@@ -245,6 +261,7 @@ EVENT_TYPES: dict[str, type[EventEnvelope]] = {
         DevicePaused, DeviceResumed, ConnectionStatistics, FileProgress,
         FileResult, ErrorEvent, Topology, FileRequest, FileDownloadReady,
         FileDownloadAck, FileDownloadResume, LogUploadDone, ExportResult,
+        ExportProgress,
     )
 }
 

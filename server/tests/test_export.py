@@ -238,6 +238,62 @@ async def test_export_rejects_while_running(runtime, agent):
 
 # ---------------- API 端点 ----------------
 
+async def test_export_progress_event(runtime, agent):
+    """EXPORT_PROGRESS：进行中会话覆盖式更新进度快照；exportId 不符忽略。"""
+    export_id = await _request_and_ack(runtime, agent)
+
+    await agent.send({"type": "EXPORT_PROGRESS", "timestamp": 2,
+                      "exportId": export_id, "deviceMac": MAC, "channel": "spp",
+                      "file": "a.log", "fileReceived": 2048, "fileSize": 4096,
+                      "filesDone": 1, "filesTotal": 3})
+
+    def _progress():
+        exp = runtime.transfer.exportrecv.get_export(AGENT)
+        return exp.get("progress") if exp else None
+
+    progress = await _until(_progress)
+    assert progress == {"file": "a.log", "fileReceived": 2048, "fileSize": 4096,
+                        "filesDone": 1, "filesTotal": 3, "channel": "spp"}
+    # 后到覆盖先到
+    await agent.send({"type": "EXPORT_PROGRESS", "timestamp": 3,
+                      "exportId": export_id, "deviceMac": MAC, "channel": "spp",
+                      "file": "a.log", "fileReceived": 4096, "fileSize": 4096,
+                      "filesDone": 1, "filesTotal": 3})
+    await _until(lambda: (runtime.transfer.exportrecv.get_export(AGENT) or {})
+                 .get("progress", {}).get("fileReceived") == 4096 or None)
+    # exportId 不符的进度不影响当前会话
+    await agent.send({"type": "EXPORT_PROGRESS", "timestamp": 4,
+                      "exportId": "export-deadbeef", "file": "x.log",
+                      "fileReceived": 1, "fileSize": 1,
+                      "filesDone": 0, "filesTotal": 0})
+    await asyncio.sleep(0.2)
+    assert runtime.transfer.exportrecv.get_export(AGENT)["progress"]["file"] == "a.log"
+
+
+async def test_api_list_exports(runtime, api, agent):
+    """GET /api/exports：进行中（含进度）+ 归档记录。"""
+    resp = await api.post("/api/exports", json={
+        "agentId": AGENT, "deviceMac": MAC, "remotePath": "/logs/"})
+    export_id = resp.json()["exportId"]
+    cmd = await agent.recv_json()
+    await agent.ack_cmd(cmd)
+
+    r = await api.get("/api/exports")
+    assert r.status_code == 200
+    body = r.json()
+    running = [e for e in body["running"] if e["exportId"] == export_id]
+    assert len(running) == 1 and running[0]["state"] == "RUNNING"
+    assert all(not k.startswith("_") for e in body["running"] for k in e)
+
+    await agent.send({"type": "EXPORT_RESULT", "timestamp": 3, "exportId": export_id,
+                      "deviceMac": MAC, "errorCode": 0, "files": []})
+    await _until(lambda: runtime.transfer.exportrecv._done or None)
+    body = (await api.get("/api/exports")).json()
+    assert all(e["exportId"] != export_id for e in body["running"])
+    done = [e for e in body["done"] if e["exportId"] == export_id]
+    assert len(done) == 1 and done[0]["state"] == "DONE"
+
+
 async def test_api_start_export(runtime, api, agent):
     """POST /api/exports → 下发 FILE_EXPORT，exportId 服务端生成返回。"""
     resp = await api.post("/api/exports", json={

@@ -152,6 +152,17 @@ class ConfigManager:
         await self._store.upsert_device(updated)
         return {"deviceMac": mac, "on": bool(on)}
 
+    async def set_transfer_channel(self, mac: str, channel: str) -> dict[str, Any]:
+        """SET_TRANSFER_CHANNEL：传输通道整项替换（ble/spp/auto）。"""
+        if channel not in validation.TRANSFER_CHANNELS:
+            raise ValueError(
+                f"channel 非法（须 ∈ {sorted(validation.TRANSFER_CHANNELS)}）: {channel!r}")
+        device = await self._require_device(mac)
+        updated = {**device, "transferChannel": channel}
+        _check(validation.validate_device(updated))
+        await self._store.upsert_device(updated)
+        return {"deviceMac": mac, "channel": channel}
+
     async def set_max_slots(self, n: int) -> dict[str, Any]:
         """SET_MAX_CONNECTIONS：连接槽上限（合法区间 2~5，§5.4）。"""
         await self.set_global_params({"maxSlots": n})

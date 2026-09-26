@@ -3,6 +3,7 @@
 import base64
 
 import pytest
+from pydantic import ValidationError
 
 from wireless_server.protocol import (
     COMMAND_TYPES,
@@ -30,14 +31,14 @@ def _wire(cmd: Envelope) -> dict:
 
 # ---------------- 20 条命令逐字段序列化 ----------------
 
-def test_all_20_commands_registered():
-    assert len(COMMAND_TYPES) == 20
+def test_all_21_commands_registered():
+    assert len(COMMAND_TYPES) == 21
     assert set(COMMAND_TYPES) == {
         "REGISTER_ACK", "CONNECT_DEVICE", "DISCONNECT_DEVICE", "REMOVE_DEVICE",
         "RESUME_DEVICE", "START_POLLING", "STOP_POLLING", "READ_CHAR",
         "WRITE_CHAR", "SET_POLLING_INTERVAL", "SET_POLL_RULES", "FILE_TRANSFER",
         "FILE_CANCEL", "FILE_EXPORT", "SET_MAX_CONNECTIONS", "SET_PERSISTENT_DEVICE",
-        "PAUSE_DEVICE", "UPLOAD_LOG", "GET_STATUS", "RESET",
+        "SET_TRANSFER_CHANNEL", "PAUSE_DEVICE", "UPLOAD_LOG", "GET_STATUS", "RESET",
     }
 
 
@@ -145,6 +146,13 @@ def test_set_persistent_device():
     assert w["on"] is True
 
 
+def test_set_transfer_channel():
+    w = _wire(build_command("SET_TRANSFER_CHANNEL", deviceMac=MAC, channel="spp"))
+    assert w["channel"] == "spp"
+    with pytest.raises(ValidationError):
+        build_command("SET_TRANSFER_CHANNEL", deviceMac=MAC, channel="nfc")
+
+
 def test_pause_device_default_abort_transfer():
     w = _wire(build_command("PAUSE_DEVICE", deviceMac=MAC))
     assert w["abortTransfer"] is False  # 默认值生效（false = 挂起传输，7.7）
@@ -186,8 +194,8 @@ def test_command_rejects_extra_fields():
 
 # ---------------- 19 类事件 parse_event 往返 ----------------
 
-def test_all_21_event_types_registered():
-    assert len(EVENT_TYPES) == 21  # 19 类，SLOT_ACQUIRED/RELEASED 与 PAUSED/RESUMED 为独立 type
+def test_all_22_event_types_registered():
+    assert len(EVENT_TYPES) == 22  # 20 类，SLOT_ACQUIRED/RELEASED 与 PAUSED/RESUMED 为独立 type
 
 
 def _roundtrip(raw: dict) -> dict:
@@ -342,6 +350,17 @@ def test_parse_export_result():
     failed = {"type": "EXPORT_RESULT", "timestamp": 2, "exportId": "export-x",
               "errorCode": 4003, "detail": "061 无响应", "files": []}
     assert _roundtrip(failed) == failed  # deviceMac 可选
+
+
+def test_parse_export_progress():
+    raw = {"type": "EXPORT_PROGRESS", "timestamp": 1, "exportId": "export-abc12345",
+           "deviceMac": MAC, "channel": "spp", "file": "a.log",
+           "fileReceived": 2048, "fileSize": 4096, "filesDone": 1, "filesTotal": 3}
+    assert _roundtrip(raw) == raw
+    minimal = {"type": "EXPORT_PROGRESS", "timestamp": 2, "exportId": "export-x",
+               "file": "b.log", "fileReceived": 0, "fileSize": 100}
+    out = _roundtrip(minimal)
+    assert out["filesDone"] == 0 and out["filesTotal"] == 0  # 缺省 0 = 未知
 
 
 def test_parse_unknown_event_returns_unknown_not_raise():

@@ -209,6 +209,14 @@ def build_router(runtime: "Runtime") -> APIRouter:
         return await _device_config_command(
             mac, "set_persistent", "SET_PERSISTENT_DEVICE", mac, on)
 
+    @router.post("/devices/{mac}/transfer-channel")
+    async def set_transfer_channel(mac: str, body: dict[str, Any]) -> dict[str, Any]:
+        channel = body.get("channel")
+        if not isinstance(channel, str):
+            raise HTTPException(status_code=422, detail="channel 必须为字符串（ble/spp/auto）")
+        return await _device_config_command(
+            mac, "set_transfer_channel", "SET_TRANSFER_CHANNEL", mac, channel)
+
     # ---------------- 全局参数（§16.4 顶层旋钮） ----------------
 
     @router.get("/config/globals")
@@ -385,6 +393,11 @@ def build_router(runtime: "Runtime") -> APIRouter:
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e))
         return {"exportId": export_id}
+
+    @router.get("/exports")
+    async def list_exports() -> dict[str, Any]:
+        """导出会话快照：进行中（含实时进度）+ 最近完成记录。"""
+        return _transfer().list_exports()
 
     # ---------------- 测试编排（§14） ----------------
 
