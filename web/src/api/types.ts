@@ -140,6 +140,37 @@ export interface ExportStartResult {
   exportId: string
 }
 
+/** 导出实时进度（EXPORT_PROGRESS 覆盖式快照，exportrecv.py） */
+export interface ExportProgress {
+  file: string | null
+  fileReceived: number | null
+  fileSize: number | null
+  filesDone: number | null
+  filesTotal: number | null
+  channel: string | null
+}
+
+/** GET /api/exports 导出会话条目（进行中/已完成同构） */
+export interface ExportSession {
+  exportId: string
+  agentId: string
+  deviceMac: string
+  remotePath: string
+  dir: string
+  files: { name: string; size: number; fileId?: string }[]
+  errors: { name: string; reason: string }[]
+  state: string // RUNNING / DONE / ERROR
+  progress?: ExportProgress
+  errorCode?: number
+  detail?: string | null
+}
+
+/** GET /api/exports 响应 */
+export interface ExportListResponse {
+  running: ExportSession[]
+  done: ExportSession[]
+}
+
 /** GET /api/transfers 传输任务（pusher 任务快照） */
 export interface TransferTask {
   taskId: string

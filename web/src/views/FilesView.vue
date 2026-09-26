@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 import client, { errorDetail } from '../api/client'
-import type { AgentListItem, ExportStartResult, FileRecord, TransferTask } from '../api/types'
+import type { AgentListItem, ExportListResponse, ExportSession, ExportStartResult, FileRecord, TransferTask } from '../api/types'
 
 const TERMINAL_STATES = ['COMPLETED', 'FAILED', 'CANCELLED']
 
@@ -113,6 +113,24 @@ async function startExport() {
   } finally {
     exportSending.value = false
   }
+}
+
+// ---------------- 导出任务进度（GET /exports，EXPORT_PROGRESS 实时进度） ----------------
+const exportSessions = ref<ExportListResponse>({ running: [], done: [] })
+
+async function fetchExports() {
+  try {
+    const resp = await client.get<ExportListResponse>('/exports')
+    exportSessions.value = resp.data
+  } catch (e) {
+    ElMessage.error(`获取导出任务失败：${errorDetail(e)}`)
+  }
+}
+
+function exportFilePercent(e: ExportSession): number {
+  const p = e.progress
+  if (!p || !p.fileSize) return 0
+  return Math.min(100, Math.round(((p.fileReceived ?? 0) * 100) / p.fileSize))
 }
 
 // ---------------- 发起传输 ----------------
@@ -263,10 +281,12 @@ onMounted(() => {
   fetchFiles()
   fetchTasks()
   fetchAgents()
-  // 导出结果异步入库：随任务轮询一并刷新文件列表
+  fetchExports()
+  // 导出结果异步入库：随任务轮询一并刷新文件列表与导出进度
   tasksTimer = setInterval(() => {
     fetchTasks()
     fetchFiles()
+    fetchExports()
   }, 2000)
 })
 onBeforeUnmount(() => {
@@ -328,6 +348,47 @@ onBeforeUnmount(() => {
           </template>
         </el-table-column>
         <template #empty>暂无文件</template>
+      </el-table>
+    </el-card>
+
+    <el-card v-if="exportSessions.running.length || exportSessions.done.length" shadow="never">
+      <template #header>导出任务（2s 轮询）</template>
+      <el-table :data="[...exportSessions.running, ...exportSessions.done.slice(0, 10)]" size="small">
+        <el-table-column prop="exportId" label="exportId" min-width="120" show-overflow-tooltip />
+        <el-table-column prop="deviceMac" label="deviceMac" min-width="140" />
+        <el-table-column prop="remotePath" label="设备侧路径" min-width="150" show-overflow-tooltip />
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag
+              :type="row.state === 'DONE' ? 'success' : row.state === 'ERROR' ? 'danger' : 'primary'"
+              size="small"
+            >
+              {{ row.state }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="进度" min-width="240">
+          <template #default="{ row }">
+            <div v-if="row.state === 'RUNNING' && row.progress" class="progress-two-stage">
+              <div class="stage-caption">
+                {{ row.progress.file ?? '-' }}（{{ row.progress.filesDone ?? 0 }}/{{
+                  row.progress.filesTotal || '?'
+                }} 个文件{{ row.progress.channel ? `，${row.progress.channel.toUpperCase()} 通道` : '' }}）
+              </div>
+              <el-progress :percentage="exportFilePercent(row)" :stroke-width="8" />
+            </div>
+            <span v-else-if="row.state === 'RUNNING'">等待设备响应…</span>
+            <span v-else>
+              {{ row.files.length }} 个文件{{ row.errors.length ? `，${row.errors.length} 个失败` : '' }}
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="errorCode" width="90">
+          <template #default="{ row }">{{ row.errorCode ?? '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="detail" label="detail" min-width="120" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.detail ?? '-' }}</template>
+        </el-table-column>
       </el-table>
     </el-card>
 

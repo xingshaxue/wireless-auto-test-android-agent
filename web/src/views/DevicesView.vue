@@ -236,9 +236,10 @@ function openChannel(d: DeviceConfig) {
 async function saveChannel() {
   if (!channelDevice) return
   try {
-    // 无专用端点：整设备配置 PUT（store 直通，字段随全量配置下发 agent）
-    await client.put('/devices', { ...channelDevice, transferChannel: channelValue.value })
-    ElMessage.success('传输通道已保存')
+    // SET_TRANSFER_CHANNEL 运行中下发（写库 + 归属 agent 在线即等 ACK，免重启 App）
+    const resp = await client.post<DeviceCommandResponse>(
+      `/devices/${channelMac.value}/transfer-channel`, { channel: channelValue.value })
+    showDispatchResult(resp.data)
     channelVisible.value = false
     fetchDevices()
   } catch (e) {
