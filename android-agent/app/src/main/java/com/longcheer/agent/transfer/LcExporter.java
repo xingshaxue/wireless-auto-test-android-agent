@@ -117,6 +117,18 @@ public class LcExporter {
         }
     }
 
+    /**
+     * 导出进度回调（可选）：目录列举完成/文件开始/块进度/文件完成。
+     * 全部在导出工作线程上同步触发，实现方须快速返回（上报节流由实现方负责）。
+     */
+    public interface ProgressListener {
+        /** 目录模式 LS 完成（单文件模式不触发）。 */
+        default void onDirectoryListed(int fileCount) { }
+        void onFileStart(String name, long totalBytes);
+        void onFileProgress(String name, long received, long totalBytes);
+        void onFileDone(String name, long totalBytes);
+    }
+
     private final GattClientProvider clientProvider;
     private final GattResponseBus responseBus;
 
@@ -133,6 +145,12 @@ public class LcExporter {
     private volatile boolean closed = false;
     /** SPP 承载（非 null 时走 RFCOMM 而非 BLE GATT；生命周期归调用方）。 */
     private com.longcheer.agent.spp.SppByteStream spp;
+    /** 进度回调（可选，FileExportManager 注入做 EXPORT_PROGRESS 节流上报）。 */
+    private volatile ProgressListener progressListener;
+
+    public void setProgressListener(ProgressListener listener) {
+        this.progressListener = listener;
+    }
 
     /** ASCII 回包邮箱（Notify 回调线程投入，会话线程阻塞取；已 trim）。 */
     private final BlockingQueue<String> mailbox = new LinkedBlockingQueue<>();
@@ -192,6 +210,10 @@ public class LcExporter {
             List<String> names = listDir(remotePath);
             if (names.isEmpty()) {
                 throw new ExportException("目录为空或列举无文件: " + remotePath);
+            }
+            ProgressListener listener0 = progressListener;
+            if (listener0 != null) {
+                listener0.onDirectoryListed(names.size());
             }
             // LS 拖尾排放：LS 应答量大（24 条 ~1.4KB），sniff 下要数秒才发完，
             // 不排净会让首个 061 的大小帧排在拖尾之后超时（真机实证目录模式
@@ -323,6 +345,10 @@ public class LcExporter {
         }
         AgentLog.i(TAG, "export start: " + remotePath + " size=" + totalSize);
         lastBlock = null; // 重播块识别按文件重置
+        ProgressListener listener = progressListener;
+        if (listener != null) {
+            listener.onFileStart(name, totalSize);
+        }
 
         File dest = new File(exportDir, name);
         MessageDigest sha = newSha256();
@@ -338,6 +364,9 @@ public class LcExporter {
                 raf.write(data); // 校验通过才追加落盘
                 sha.update(data);
                 received += data.length;
+                if (listener != null) {
+                    listener.onFileProgress(name, received, totalSize);
+                }
             }
         } catch (java.io.IOException e) {
             throw new ExportException("落盘失败: " + e.getMessage());
@@ -348,6 +377,9 @@ public class LcExporter {
         // （BLE/SPP 统一；SPP 抓包曾见 OVER 自动来，但 062 触发是 B.6 权威语义）。
         writeAscii("062");
         awaitExportOver(remotePath);
+        if (listener != null) {
+            listener.onFileDone(name, totalSize);
+        }
         return new ExportedFile(name, remotePath, dest, totalSize, sha.digest());
     }
 

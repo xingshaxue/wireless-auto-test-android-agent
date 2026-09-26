@@ -29,6 +29,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -288,6 +289,58 @@ public class FileExportManagerTest {
         assertEquals(Integer.valueOf(4003), captor.getValue().get("errorCode"));
         assertTrue(String.valueOf(captor.getValue().get("detail")).contains("061"));
         assertTrue(tcpClient.frames.isEmpty());
+    }
+
+    @Test
+    public void exportProgressEventsAreReported() {
+        // fake 导出器触发监听器回调 → 管理器节流上报 EXPORT_PROGRESS（开始/完成必报）。
+        byte[] data = content(100);
+        final LcExporter.ProgressListener[] captured = new LcExporter.ProgressListener[1];
+        LcExporter exporter = new LcExporter(mock(GattClientProvider.class),
+                new GattResponseBus()) {
+            @Override
+            public void setProgressListener(ProgressListener listener) {
+                captured[0] = listener;
+            }
+
+            @Override
+            public List<ExportedFile> export(DeviceController device, String remotePath,
+                                             File exportDir) throws ExportException {
+                if (!exportDir.isDirectory() && !exportDir.mkdirs()) {
+                    throw new ExportException("fake mkdirs failed");
+                }
+                File f = new File(exportDir, "a.bin");
+                try (FileOutputStream fos = new FileOutputStream(f)) {
+                    fos.write(data);
+                } catch (java.io.IOException ex) {
+                    throw new ExportException("fake write failed");
+                }
+                if (captured[0] != null) {
+                    captured[0].onFileStart("a.bin", data.length);
+                    captured[0].onFileProgress("a.bin", data.length / 2, data.length);
+                    captured[0].onFileDone("a.bin", data.length);
+                }
+                List<ExportedFile> out = new ArrayList<>();
+                out.add(new ExportedFile("a.bin", remotePath, f, data.length, sha256(data)));
+                return out;
+            }
+        };
+        FileExportManager manager = newManager(exporter);
+
+        assertEquals(0, manager.startExport("export-t9", MAC, "/data/a.bin"));
+
+        assertEquals("DONE", manager.getExportState("export-t9"));
+        ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
+        verify(reporter, atLeast(2)).report(eq("EXPORT_PROGRESS"), captor.capture());
+        List<Map<String, Object>> events = captor.getAllValues();
+        Map<String, Object> first = events.get(0);
+        assertEquals("export-t9", first.get("exportId"));
+        assertEquals("a.bin", first.get("file"));
+        assertEquals(Long.valueOf(0), first.get("fileReceived"));
+        assertEquals("ble", first.get("channel"));
+        Map<String, Object> last = events.get(events.size() - 1);
+        assertEquals(Integer.valueOf(1), last.get("filesDone"));
+        assertEquals(Long.valueOf(data.length), last.get("fileReceived"));
     }
 
     @Test

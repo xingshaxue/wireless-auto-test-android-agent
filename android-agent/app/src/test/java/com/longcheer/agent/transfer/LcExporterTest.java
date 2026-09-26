@@ -351,6 +351,60 @@ public class LcExporterTest {
     }
 
     @Test
+    public void progressCallbacksFireInOrder() throws Exception {
+        // 进度回调：onFileStart → onFileProgress（末次收到=总大小）→ onFileDone；
+        // 目录模式先触发 onDirectoryListed。
+        byte[] data = content(300);
+        firmware.files.put("/data/a.bin", data);
+        List<String> events = new ArrayList<>();
+        exporter.setProgressListener(new LcExporter.ProgressListener() {
+            @Override public void onDirectoryListed(int fileCount) {
+                events.add("ls:" + fileCount);
+            }
+            @Override public void onFileStart(String name, long totalBytes) {
+                events.add("start:" + name + ":" + totalBytes);
+            }
+            @Override public void onFileProgress(String name, long received, long totalBytes) {
+                events.add("progress:" + received + "/" + totalBytes);
+            }
+            @Override public void onFileDone(String name, long totalBytes) {
+                events.add("done:" + name + ":" + totalBytes);
+            }
+        });
+
+        exporter.export(controller, "/data/a.bin", exportDir);
+
+        assertEquals("start:a.bin:300", events.get(0));
+        assertEquals("done:a.bin:300", events.get(events.size() - 1));
+        assertTrue(events.contains("progress:300/300"));
+        assertFalse(events.stream().anyMatch(e -> e.startsWith("ls:")));
+    }
+
+    @Test
+    public void progressDirectoryListedCallback() throws Exception {
+        firmware.files.put("/logs/a.txt", content(10));
+        firmware.files.put("/logs/b.txt", content(20));
+        firmware.dirs.put("/logs/", Arrays.asList("a.txt", "b.txt"));
+        List<String> events = new ArrayList<>();
+        exporter.setProgressListener(new LcExporter.ProgressListener() {
+            @Override public void onDirectoryListed(int fileCount) {
+                events.add("ls:" + fileCount);
+            }
+            @Override public void onFileStart(String name, long totalBytes) { }
+            @Override public void onFileProgress(String name, long received, long totalBytes) { }
+            @Override public void onFileDone(String name, long totalBytes) {
+                events.add("done:" + name);
+            }
+        });
+
+        exporter.export(controller, "/logs/", exportDir);
+
+        assertEquals("ls:2", events.get(0));
+        assertTrue(events.contains("done:a.txt"));
+        assertTrue(events.contains("done:b.txt"));
+    }
+
+    @Test
     public void singleFileFlowCompletes() throws Exception {
         // 单文件：061→大小帧，062×3 拉齐（128+128+44），FILE_EXPORT_OVER 收尾。
         byte[] data = content(300);

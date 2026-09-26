@@ -587,6 +587,47 @@ public class CommandDispatcherTest {
         verify(controller).resume();
     }
 
+    @Test
+    public void testSetTransferChannelAppliesToController() {
+        DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.READY);
+        when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);
+
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "SET_TRANSFER_CHANNEL");
+        cmd.put("requestId", "req-23");
+        cmd.put("deviceMac", "AA:BB:CC:DD:EE:FF");
+        cmd.put("channel", "spp");
+
+        dispatcher.dispatch(cmd);
+
+        verify(controller).setTransferChannel("spp");
+        verify(stateReporter).reportCommandAck("req-23", 0, null);
+    }
+
+    @Test
+    public void testSetTransferChannelValidation() {
+        DeviceController controller = mockController("AA:BB:CC:DD:EE:FF", DeviceState.READY);
+        when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(controller);
+
+        Map<String, Object> cmd = new HashMap<>();
+        cmd.put("type", "SET_TRANSFER_CHANNEL");
+        cmd.put("requestId", "req-24");
+        cmd.put("deviceMac", "AA:BB:CC:DD:EE:FF");
+        cmd.put("channel", "nfc");
+
+        dispatcher.dispatch(cmd);
+
+        verify(controller, never()).setTransferChannel(any());
+        verify(stateReporter).reportCommandAck("req-24", 2001, "channel must be ble/spp/auto");
+
+        // 设备不存在 → 2003
+        when(deviceRegistry.findByMac("AA:BB:CC:DD:EE:FF")).thenReturn(null);
+        cmd.put("requestId", "req-25");
+        cmd.put("channel", "ble");
+        dispatcher.dispatch(cmd);
+        verify(stateReporter).reportCommandAck("req-25", 2003, "device not found");
+    }
+
     private DeviceController mockController(String mac, DeviceState state) {
         DeviceController controller = mock(DeviceController.class);
         ManagedDeviceInfo info = new ManagedDeviceInfo("dut-001", mac);

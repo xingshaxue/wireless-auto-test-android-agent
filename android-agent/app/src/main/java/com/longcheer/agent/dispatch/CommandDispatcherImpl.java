@@ -123,6 +123,9 @@ public class CommandDispatcherImpl implements CommandDispatcher {
             case "SET_PERSISTENT_DEVICE":
                 handleSetPersistent(command, requestId, mac);
                 break;
+            case "SET_TRANSFER_CHANNEL":
+                handleSetTransferChannel(command, requestId, mac);
+                break;
             case "PAUSE_DEVICE":
                 handlePauseDevice(command, requestId, mac);
                 break;
@@ -452,6 +455,28 @@ public class CommandDispatcherImpl implements CommandDispatcher {
         }
         boolean on = booleanValue(command.get("on"), false);
         connectionScheduler.setPersistent(mac, on);
+        stateReporter.reportCommandAck(requestId, 0, null);
+    }
+
+    /**
+     * SET_TRANSFER_CHANNEL（§16.4 运行中更新）：传输通道整项替换（ble/spp/auto）。
+     * 写 Controller 快照即时生效——文件传输/导出都在任务启动时从快照读通道
+     * （FileTransferManager 适配器工厂 / FileExportManager 选路），进行中的任务不换通道。
+     */
+    private void handleSetTransferChannel(Map<String, Object> command, String requestId, String mac) {
+        DeviceController controller = deviceRegistry.findByMac(mac);
+        if (controller == null) {
+            stateReporter.reportCommandAck(requestId, 2003, "device not found");
+            return;
+        }
+        String channel = stringValue(command.get("channel"));
+        if (!com.longcheer.agent.config.DeviceConfig.TRANSFER_CHANNEL_BLE.equals(channel)
+                && !com.longcheer.agent.config.DeviceConfig.TRANSFER_CHANNEL_SPP.equals(channel)
+                && !com.longcheer.agent.config.DeviceConfig.TRANSFER_CHANNEL_AUTO.equals(channel)) {
+            stateReporter.reportCommandAck(requestId, 2001, "channel must be ble/spp/auto");
+            return;
+        }
+        controller.setTransferChannel(channel);
         stateReporter.reportCommandAck(requestId, 0, null);
     }
 

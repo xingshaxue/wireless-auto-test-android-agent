@@ -163,7 +163,8 @@ public class FileExportManager {
                         || CHANNEL_AUTO.equals(channel));
                 if (wantSpp) {
                     try {
-                        exported = exportViaSpp(controller, ctx.remotePath, dir);
+                        exported = exportViaSpp(controller, ctx.remotePath, dir,
+                                new ProgressReporter(ctx, "spp"));
                         AgentLog.i(TAG, "SPP 通道导出成功: " + exported.size() + " 个文件");
                     } catch (Exception e) {
                         if (CHANNEL_SPP.equals(channel)) {
@@ -174,6 +175,7 @@ public class FileExportManager {
                 }
                 if (exported == null) {
                     exporter = exporterFactory.create();
+                    exporter.setProgressListener(new ProgressReporter(ctx, "ble"));
                     exported = exporter.export(controller, ctx.remotePath, dir);
                 }
                 for (LcExporter.ExportedFile f : exported) {
@@ -207,7 +209,8 @@ public class FileExportManager {
      * 而每文件新开一条 SPP 会话直接 061 稳定且 ~40KB/s）。
      */
     private List<LcExporter.ExportedFile> exportViaSpp(DeviceController controller,
-                                                       String remotePath, File dir)
+                                                       String remotePath, File dir,
+                                                       ProgressReporter progress)
             throws Exception {
         String macAddr = controller.snapshot().getMac();
         if (remotePath.endsWith("/")) {
@@ -223,13 +226,14 @@ public class FileExportManager {
             } finally {
                 lsStream.close();
             }
+            progress.filesTotal = names.size();
             List<LcExporter.ExportedFile> out = new ArrayList<>();
             List<String> failures = new ArrayList<>();
             boolean first = true;
             for (String name : names) {
                 String path = name.startsWith("/") ? name : remotePath + name;
                 try {
-                    out.addAll(exportViaSpp(controller, path, dir)); // 单文件=独立新会话
+                    out.addAll(exportViaSpp(controller, path, dir, progress)); // 单文件=独立新会话
                     first = false;
                 } catch (Exception e) {
                     if (first) {
@@ -248,6 +252,7 @@ public class FileExportManager {
         try {
             LcExporter exporter = exporterFactory.create();
             try {
+                exporter.setProgressListener(progress);
                 return exporter.exportOverSpp(controller, remotePath, dir, stream);
             } finally {
                 closeQuietly(exporter);
@@ -318,6 +323,67 @@ public class FileExportManager {
             payload.put("detail", detail);
         }
         stateReporter.report("EXPORT_RESULT", payload);
+    }
+
+    /** EXPORT_PROGRESS 块进度节流间隔（文件开始/完成必报，不受节流）。 */
+    private static final long PROGRESS_INTERVAL_MS = 500L;
+
+    /**
+     * EXPORT_PROGRESS 节流上报器（LcExporter.ProgressListener 实现）。
+     * 覆盖式语义：server 侧同 exportId 后到整体取代先到；filesTotal 由目录列举
+     * 填充（SPP 目录模式由管理器直写，BLE 目录模式走 onDirectoryListed），
+     * 单文件/未知 = 0。
+     */
+    private final class ProgressReporter implements LcExporter.ProgressListener {
+        private final ExportContext ctx;
+        private final String channel;
+        volatile int filesTotal;
+        private int filesDone;
+        private long lastReportMs;
+
+        ProgressReporter(ExportContext ctx, String channel) {
+            this.ctx = ctx;
+            this.channel = channel;
+        }
+
+        @Override
+        public void onDirectoryListed(int fileCount) {
+            filesTotal = fileCount;
+        }
+
+        @Override
+        public void onFileStart(String name, long totalBytes) {
+            report(name, 0, totalBytes, true);
+        }
+
+        @Override
+        public void onFileProgress(String name, long received, long totalBytes) {
+            report(name, received, totalBytes, false);
+        }
+
+        @Override
+        public void onFileDone(String name, long totalBytes) {
+            filesDone++;
+            report(name, totalBytes, totalBytes, true);
+        }
+
+        private void report(String file, long received, long size, boolean force) {
+            long now = System.currentTimeMillis();
+            if (!force && now - lastReportMs < PROGRESS_INTERVAL_MS) {
+                return;
+            }
+            lastReportMs = now;
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("exportId", ctx.exportId);
+            payload.put("deviceMac", ctx.mac);
+            payload.put("channel", channel);
+            payload.put("file", file);
+            payload.put("fileReceived", received);
+            payload.put("fileSize", size);
+            payload.put("filesDone", filesDone);
+            payload.put("filesTotal", filesTotal);
+            stateReporter.report("EXPORT_PROGRESS", payload);
+        }
     }
 
     /** 释放导出器资源（幂等、不抛出）。 */
